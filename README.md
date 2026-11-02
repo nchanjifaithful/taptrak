@@ -23,15 +23,15 @@ top-level folder per bottom tab, and a subfolder for each screen opened from the
 
 | Behaviour | How it works |
 |---|---|
-| **Order** | Depth-first. On each screen it tries the elements, taps one representative item inside scrollable content, scrolls up to twice for more, moves to the next tab, then presses Back. |
+| **Order** | Depth-first. On each screen it tries every element, scrolls up to twice for more, moves to the next tab, then presses Back. |
 | **Screenshots** | Every screen state it hasn't recorded yet, and scrolls that show a good amount of new content. |
 | **Skipped** | Returning to a known screen, a tap that changes nothing, and any image matching one already saved. |
 | **Speed** | It moves on as soon as the screen stops changing, and saves in the background. |
 | **Screens with little to tap** | Games and web content are also tapped on a grid of points. |
-| **Whole app** | If Back leaves the app, it reopens the app and returns to what's unfinished. The run ends when nothing is left, the limit is reached, or 500 interactions in a row produce no new image. |
+| **Whole app** | If Back leaves the app, it reopens the app and returns to what's unfinished. The run ends when nothing is left, the limit is reached, or 8000 interactions in a row produce no new image. |
 | **Never tapped** | Anything that logs out or deletes, or a button labelled exactly Pay, Buy, Send, Confirm, Place order, Subscribe, Checkout, Call, Block or Reset. |
 
-Because it presses switches and tries many elements, run it on a test account: it can
+Because it presses switches and tries every element, run it on a test account: it can
 change the app's settings and data.
 
 ## Release notes

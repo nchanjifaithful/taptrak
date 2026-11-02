@@ -55,13 +55,17 @@ public class CrawlerAccessibilityService extends AccessibilityService {
     private static final int MAX_STEPS = 1000000;
     /** At most two full scrolls per screen, then move on. */
     private static final int MAX_SCROLLS_PER_SCREEN = 2;
-    private static final int MAX_TAPS_PER_SCREEN = 500;
-    /** Interactions in a row without a new screenshot before the app counts as finished. */
-    private static final int MAX_FRUITLESS_INTERACTIONS = 500;
-    private static final int MAX_FRUITLESS_RELAUNCHES = 8;
-    private static final int MAX_ROUTE_TRIES = 6;
-    private static final int MAX_BACKS_ON_SCREEN = 3;
-    private static final int MAX_FOREIGN_BACKS = 4;
+    private static final int MAX_TAPS_PER_SCREEN = 2000;
+    /**
+     * Interactions in a row without a new screenshot before the app counts as finished.
+     * Kept high so a big app with many already-seen screens between new ones isn't cut short;
+     * the run still ends once there is genuinely nothing unexplored left to reach.
+     */
+    private static final int MAX_FRUITLESS_INTERACTIONS = 8000;
+    private static final int MAX_FRUITLESS_RELAUNCHES = 40;
+    private static final int MAX_ROUTE_TRIES = 60;
+    private static final int MAX_BACKS_ON_SCREEN = 12;
+    private static final int MAX_FOREIGN_BACKS = 6;
     private static final int MAX_LOADING_POLLS = 10;
     private static final int CLEAR_POLLS_TO_RESUME = 2;
     private static final int MAX_FOLDER_DEPTH = 6;
@@ -102,8 +106,6 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         int gridTaps;
         int routeTries;
         boolean exhausted;
-        /** A list on this screen has had its one representative row tapped. */
-        boolean listTapped;
     }
 
     private static final class Tap {
@@ -406,7 +408,6 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         // Depth first: this screen's content, then more of it by scrolling, then tabs.
         ScreenAnalyzer.Candidate next = nextElement(screen, a, false);
         if (next != null) {
-            if (next.listItem) markListTried(screen, a);
             act(screen, next);
         } else if (scrollOn(screen, a)) {
             scrolledScreen = screen;
@@ -415,7 +416,6 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         } else if (a.candidates.size() < SPARSE_ELEMENTS && screen.gridTaps < GRID_COLUMNS * GRID_ROWS) {
             tapGridPoint(screen);
         } else if ((next = nextElement(screen, a, true)) != null) {
-            if (next.listItem) markListTried(screen, a);
             act(screen, next);
         } else {
             screen.exhausted = true;
@@ -651,21 +651,11 @@ public class CrawlerAccessibilityService extends AccessibilityService {
 
     private ScreenAnalyzer.Candidate nextElement(Screen screen, ScreenAnalyzer.Result a, boolean bottomBar) {
         if (screen.taps >= MAX_TAPS_PER_SCREEN) return null;
+        // Touch everything: every untried button, field, list row and tab.
         for (ScreenAnalyzer.Candidate c : a.candidates) {
-            if (c.bottomBar != bottomBar || screen.tried.contains(c.signature)) continue;
-            // One row stands in for the whole list: once tapped, skip the rest.
-            if (c.listItem && screen.listTapped) continue;
-            return c;
+            if (c.bottomBar == bottomBar && !screen.tried.contains(c.signature)) return c;
         }
         return null;
-    }
-
-    /** Tapping one row represents the list, so mark every current row done. */
-    private void markListTried(Screen screen, ScreenAnalyzer.Result a) {
-        screen.listTapped = true;
-        for (ScreenAnalyzer.Candidate c : a.candidates) {
-            if (c.listItem) screen.tried.add(c.signature);
-        }
     }
 
     private void tap(Screen screen, ScreenAnalyzer.Candidate c, boolean exploring) {

@@ -3,6 +3,23 @@
 Each release's notes are built from the newest section below, followed by the
 commits in that build. Add a section here when a change is worth describing.
 
+## 2.6
+
+Explore the whole app, not just the first few screens.
+
+- **Every element is tapped again** — every button, text field, list row and tab.
+  The one-row-per-list shortcut from 2.5 is gone, because an app whose menus are
+  lists was only being explored one branch deep, which is why runs ended after a
+  handful of screenshots.
+- **The crawl no longer gives up early.** The limits that could declare a run
+  "complete" after a short dry spell or when it briefly lost its way are raised a
+  long way, so it keeps going until there is genuinely nothing unexplored left.
+- **Still one screenshot per distinct screen, no duplicates** — capture fires on
+  every newly-seen layout and the image-hash dedup drops anything that already
+  looks the same.
+- Sign-in and permission screens still pause the run for you; it resumes on its
+  own once you're through, or use the overlay to skip.
+
 ## 2.5
 
 Broader coverage, far fewer wasted taps.
