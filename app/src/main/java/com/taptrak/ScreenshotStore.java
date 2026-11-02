@@ -19,19 +19,30 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 
 /**
- * Writes screenshots to {@code Pictures/TapTrak/<App>/<Feature>/}, where they
- * show up in the gallery and any file manager.
+ * Writes screenshots to {@code Pictures/TapTrak/<App>/<Folder>/<Subfolder>/}, where
+ * they show up in the gallery and any file manager. Encoding happens on its own
+ * thread so the crawl doesn't wait for it.
  */
 final class ScreenshotStore {
 
     static final String ROOT = "TapTrak";
+    /** Separates folder levels in the paths the engine passes in. */
+    static final String SEPARATOR = "/";
     private static final int MAX_NAME = 40;
+    private static final int JPEG_QUALITY = 95;
+    /** Full-size frames waiting to be written, before the crawl has to wait its turn. */
+    private static final int MAX_QUEUED = 4;
 
     private final Context context;
     private final String appFolder;
-    private final Map<String, Integer> perFeature = new HashMap<>();
+    private final ExecutorService writer = Executors.newSingleThreadExecutor();
+    private final Semaphore queueSlots = new Semaphore(MAX_QUEUED);
+    private final Map<String, Integer> perFolder = new HashMap<>();
     private final List<Uri> savedUris = new ArrayList<>();
     private final List<File> savedFiles = new ArrayList<>();
 
@@ -44,46 +55,58 @@ final class ScreenshotStore {
         return Environment.DIRECTORY_PICTURES + "/" + ROOT + "/" + safeName(appLabel, "App");
     }
 
-    int featureCount() { return perFeature.size(); }
+    int folderCount() { return perFolder.size(); }
 
-    int shotsIn(String feature) {
-        Integer n = perFeature.get(safeName(feature, "General"));
-        return n == null ? 0 : n;
-    }
+    /** Queues the bitmap for writing, and recycles it afterwards. */
+    void save(Bitmap bitmap, String folderPath, String screenTitle) {
+        String folder = safePath(folderPath);
+        Integer last = perFolder.get(folder);
+        int index = last == null ? 1 : last + 1;
+        perFolder.put(folder, index);
+        String name = String.format(Locale.US, "%03d_%s.jpg", index, safeName(screenTitle, "Screen"));
 
-    boolean save(Bitmap bitmap, String feature, String screenTitle) {
-        String folder = safeName(feature, "General");
-        int index = shotsIn(feature) + 1;
-        String name = String.format(Locale.US, "%02d_%s.png", index, safeName(screenTitle, "Screen"));
-        boolean ok = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-                ? saveToMediaStore(bitmap, folder, name)
-                : saveToFile(bitmap, folder, name);
-        if (ok) perFeature.put(folder, index);
-        return ok;
+        queueSlots.acquireUninterruptibly();
+        writer.execute(() -> {
+            try {
+                boolean ok = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                        ? saveToMediaStore(bitmap, folder, name)
+                        : saveToFile(bitmap, folder, name);
+                if (!ok) Crawler.status(context.getString(R.string.status_save_failed));
+            } finally {
+                bitmap.recycle();
+                queueSlots.release();
+            }
+        });
     }
 
     /** Removes only what this run saved, so Restart starts clean without touching earlier runs. */
     void deleteRunShots() {
-        ContentResolver resolver = context.getContentResolver();
-        for (Uri uri : savedUris) {
-            try { resolver.delete(uri, null, null); } catch (RuntimeException ignored) {}
-        }
-        for (File file : savedFiles) {
-            if (file.delete()) {
-                MediaScannerConnection.scanFile(context, new String[]{file.getPath()}, null, null);
-            }
-        }
-        savedUris.clear();
-        savedFiles.clear();
-        perFeature.clear();
+        perFolder.clear();
         Crawler.lastShotUri = null;
+        writer.execute(() -> {
+            ContentResolver resolver = context.getContentResolver();
+            for (Uri uri : savedUris) {
+                try { resolver.delete(uri, null, null); } catch (RuntimeException ignored) {}
+            }
+            for (File file : savedFiles) {
+                if (file.delete()) {
+                    MediaScannerConnection.scanFile(context, new String[]{file.getPath()}, null, null);
+                }
+            }
+            savedUris.clear();
+            savedFiles.clear();
+            Crawler.lastShotUri = null;
+        });
     }
+
+    /** Finishes what's queued, then releases the thread. */
+    void close() { writer.shutdown(); }
 
     private boolean saveToMediaStore(Bitmap bitmap, String folder, String name) {
         ContentResolver resolver = context.getContentResolver();
         ContentValues values = new ContentValues();
         values.put(MediaStore.Images.Media.DISPLAY_NAME, name);
-        values.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
+        values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
         values.put(MediaStore.Images.Media.RELATIVE_PATH,
                 Environment.DIRECTORY_PICTURES + "/" + ROOT + "/" + appFolder + "/" + folder);
         values.put(MediaStore.Images.Media.IS_PENDING, 1);
@@ -91,7 +114,7 @@ final class ScreenshotStore {
         Uri uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
         if (uri == null) return false;
         try (OutputStream out = resolver.openOutputStream(uri)) {
-            if (out == null || !bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) {
+            if (out == null || !bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)) {
                 resolver.delete(uri, null, null);
                 return false;
             }
@@ -113,14 +136,23 @@ final class ScreenshotStore {
         if (!dir.isDirectory() && !dir.mkdirs()) return false;
         File file = new File(dir, name);
         try (FileOutputStream out = new FileOutputStream(file)) {
-            if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) return false;
+            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)) return false;
         } catch (IOException e) {
             return false;
         }
         savedFiles.add(file);
-        MediaScannerConnection.scanFile(context, new String[]{file.getPath()}, new String[]{"image/png"},
+        MediaScannerConnection.scanFile(context, new String[]{file.getPath()}, new String[]{"image/jpeg"},
                 (path, uri) -> { if (uri != null) Crawler.lastShotUri = uri; });
         return true;
+    }
+
+    private static String safePath(String path) {
+        StringBuilder out = new StringBuilder();
+        for (String part : path.split(SEPARATOR)) {
+            if (out.length() > 0) out.append(SEPARATOR);
+            out.append(safeName(part, "Screen"));
+        }
+        return out.toString();
     }
 
     private static String safeName(String raw, String fallback) {

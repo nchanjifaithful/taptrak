@@ -24,12 +24,12 @@ public final class Crawler {
 
     public static volatile String targetPackage = "";
     public static volatile String targetLabel = "";
-    public static volatile int maxShots = 1000;
+    public static volatile int maxShots = 10000;
 
     public static volatile State state = State.IDLE;
     public static volatile String statusText = "";
     public static volatile int shotCount = 0;
-    public static volatile int featureCount = 0;
+    public static volatile int folderCount = 0;
     public static volatile int duplicatesSkipped = 0;
     public static volatile int permissionsGranted = 0;
 
@@ -62,7 +62,7 @@ public final class Crawler {
 
     public static void resetCounters() {
         shotCount = 0;
-        featureCount = 0;
+        folderCount = 0;
         duplicatesSkipped = 0;
         permissionsGranted = 0;
     }

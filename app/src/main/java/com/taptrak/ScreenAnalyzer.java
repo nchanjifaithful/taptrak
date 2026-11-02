@@ -18,10 +18,9 @@ import java.util.regex.Pattern;
  * engine needs: an identity for the screen, the elements worth tapping, and
  * whether the screen is asking the user to sign in.
  *
- * <p>A screen's identity has three parts: its structure (view types and ids), its
- * labels (fixed text such as the title) and which tabs are selected. Positions and
- * counts are left out, so scrolling and new list rows don't make a screen look new,
- * while a different title or tab does.
+ * <p>A screen's identity is its structure (view types and ids), its visible labels
+ * and which tabs are selected. Positions and numbers are left out, so a counter
+ * ticking over doesn't make a screen look new, while different text or a tab does.
  */
 final class ScreenAnalyzer {
 
@@ -29,8 +28,6 @@ final class ScreenAnalyzer {
     private static final int MAX_NODES = 2500;
     private static final int MAX_TEXT_TOKEN = 30;
     private static final int MAX_LIST_TEXT_TOKENS = 12;
-    /** Below this many fixed labels, a screen is told apart by its first list entries. */
-    private static final int MIN_FIXED_LABELS = 2;
     private static final int MAX_TAB_GROUP = 12;
     /** Tab bars in the lower part of the screen stay put across the app's sections. */
     private static final float BOTTOM_BAR_FROM = 0.6f;
@@ -61,8 +58,6 @@ final class ScreenAnalyzer {
     static final class Candidate {
         AccessibilityNodeInfo node;
         String signature;
-        /** Rows of one list share a kind, so the engine can give up on rows that lead nowhere new. */
-        String kind;
         String label;
         int priority;
         int top;
@@ -70,7 +65,6 @@ final class ScreenAnalyzer {
         boolean nav;
         boolean bottomBar;
         boolean selected;
-        boolean row;
     }
 
     static final class Result {
@@ -104,7 +98,7 @@ final class ScreenAnalyzer {
     }
 
     private Result finish() {
-        if (result.labels.size() < MIN_FIXED_LABELS) result.labels.addAll(listTexts);
+        result.labels.addAll(listTexts);
         result.hash = Integer.toHexString((result.activity + "|"
                 + TextUtils.join("|", result.structure) + "|"
                 + TextUtils.join("|", result.labels) + "|"
@@ -196,9 +190,7 @@ final class ScreenAnalyzer {
 
     private void addCandidate(AccessibilityNodeInfo node, String cls, String id, String text,
                               String desc, boolean editable, boolean inList, boolean nav) {
-        if (node.isPassword() || TOGGLE.matcher(cls).find()) return;
-        // Bottom-bar items report as checkable too, so only non-tabs count as toggles here.
-        if (node.isCheckable() && !nav) return;
+        if (node.isPassword()) return;
 
         Rect r = new Rect();
         node.getBoundsInScreen(r);
@@ -216,13 +208,13 @@ final class ScreenAnalyzer {
         c.nav = nav;
         c.bottomBar = nav && r.top > screenHeight * BOTTOM_BAR_FROM;
         c.selected = nav && (node.isSelected() || node.isChecked());
-        c.row = inList && !editable && !nav;
         c.top = r.top;
-        c.signature = cls + "|" + id + "|" + DIGITS.matcher(label).replaceAll("#")
+        // Every labelled row is its own element; unlabelled ones are told apart by position.
+        c.signature = cls + "|" + id + "|" + label
                 + (label.isEmpty() ? "|" + r.left + "," + r.top : "");
-        c.kind = c.row ? "row|" + cls + "|" + id : c.signature;
         // Tabs come last: a tab's content is walked to the end before moving to the next tab.
-        c.priority = nav ? 0 : editable ? 4 : inList ? 2 : label.isEmpty() ? 1 : 3;
+        boolean toggle = node.isCheckable() || TOGGLE.matcher(cls).find();
+        c.priority = nav ? 0 : editable ? 5 : toggle ? 1 : inList ? 3 : label.isEmpty() ? 2 : 4;
         result.candidates.add(c);
     }
 

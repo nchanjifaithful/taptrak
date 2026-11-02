@@ -33,10 +33,10 @@ public class MainActivity extends Activity implements Crawler.Listener {
     private static final String PREFS = "taptrak";
     private static final String KEY_PACKAGE = "package";
     private static final String KEY_LABEL = "label";
-    private static final String KEY_LIMIT = "shot_limit";
+    private static final String KEY_LIMIT = "max_screenshots";
     private static final String KEY_ASKED_NOTIFICATIONS = "asked_notifications";
 
-    private static final int LIMIT_DEFAULT = 1000;
+    private static final int LIMIT_DEFAULT = 10000;
 
     private SharedPreferences prefs;
     private View rowAccessibility, rowCapture, rowNotifications, rowStorage;

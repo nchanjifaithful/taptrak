@@ -1,8 +1,8 @@
 # TapTrak
 
-A lightweight Android tool that explores an app by itself and saves **one
-screenshot per distinct screen, organised by feature**. It's meant for QA,
-regression and accessibility testing of **apps you own or are authorised to test**.
+A lightweight Android tool that walks through an app by itself and **screenshots
+every interaction**, skipping only duplicate images. It's meant for QA, regression
+and accessibility testing of **apps you own or are authorised to test**.
 
 - No third-party libraries, only the Android framework, so the APK stays tiny.
 - Pick the app from a list of what's on the phone.
@@ -13,25 +13,26 @@ regression and accessibility testing of **apps you own or are authorised to test
 Everything is in the phone's gallery and file manager:
 
 ```
-Pictures/TapTrak/<App name>/<Feature>/01_<Screen title>.png
+Pictures/TapTrak/<App name>/<Folder>/<Subfolder>/001_<Screen title>.jpg
 ```
 
-The app's home screen goes in `Home`, and sign-in screens go in `Sign-in`. Other
-features are named after what opened them, such as the `Settings` tab.
+Folders follow the path taken through the app: `Home` for the first screen, one
+top-level folder per bottom tab, and a subfolder for each screen opened from there.
 
 ## How it scans an app
 
-It's built for app inventories: every new screen in the app, without the small
-variations.
-
 | Behaviour | How it works |
 |---|---|
-| **Tabs** | Each tab is a separate journey with its own folder. A tab's content is explored to the end, then the next tab is opened. |
-| **Whole app** | It remembers how screens connect. If Back leaves the app, it reopens the app and returns to what's unexplored. The run ends when nothing is left or the screenshot limit is reached. |
-| **What counts as new** | A different title, selected tab, activity or layout. |
-| **What's ignored** | Scrolling, new list rows and changing values, plus any image identical to one already saved. |
-| **Lists** | Rows are opened until they clearly lead to the same kind of page: three rows reaching a known screen, or five pages sharing one layout. A settings list is walked in full, while a news feed costs a few taps. |
-| **Toggles and risky actions** | Switches and checkboxes aren't touched. Neither is anything that logs out or deletes, or a button labelled exactly Pay, Buy, Send, Confirm, Place order, Subscribe, Checkout, Call, Block or Reset. Screens such as "Payments" are still opened. |
+| **Order** | Depth-first. On each screen it tries every element, scrolls for more, moves to the next tab, then presses Back. |
+| **Screenshots** | One after every tap, text entry, toggle and scroll, and on first reaching any screen. |
+| **Duplicates** | A screenshot is dropped only when its image matches one already saved. |
+| **Speed** | It moves on as soon as the screen stops changing, and saves in the background. |
+| **Screens with little to tap** | Games and web content are also tapped on a grid of points. |
+| **Whole app** | If Back leaves the app, it reopens the app and returns to what's unfinished. The run ends when nothing is left, the limit is reached, or 500 interactions in a row produce no new image. |
+| **Never tapped** | Anything that logs out or deletes, or a button labelled exactly Pay, Buy, Send, Confirm, Place order, Subscribe, Checkout, Call, Block or Reset. |
+
+Because it presses switches and tries every element, run it on a test account: it can
+change the app's settings and data.
 
 ## Release notes
 

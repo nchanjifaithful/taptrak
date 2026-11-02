@@ -27,7 +27,7 @@ import java.util.concurrent.TimeUnit;
 final class OverlayController implements Crawler.Listener {
 
     /** Compositing margin, so a frame already in flight isn't taken as overlay-free. */
-    private static final long HIDE_SETTLE_MS = 48;
+    private static final long HIDE_SETTLE_MS = 20;
     private static final long HIDE_TIMEOUT_MS = 200;
 
     private final CrawlerAccessibilityService service;
@@ -89,7 +89,7 @@ final class OverlayController implements Crawler.Listener {
     public void onCrawlerChanged() {
         if (root == null) return;
         Crawler.State state = Crawler.state;
-        counts.setText(service.getString(R.string.overlay_counts, Crawler.shotCount, Crawler.featureCount));
+        counts.setText(service.getString(R.string.overlay_counts, Crawler.shotCount, Crawler.folderCount));
         status.setText(Crawler.statusText);
 
         int dotColor;

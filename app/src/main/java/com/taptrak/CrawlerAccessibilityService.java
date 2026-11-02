@@ -12,6 +12,7 @@ import android.graphics.Rect;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.util.DisplayMetrics;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
@@ -24,51 +25,55 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * The capture engine. Walks the target app depth-first through the accessibility
- * tree and saves one screenshot of every distinct screen, for an inventory of the
- * whole app.
+ * The capture engine: a depth-first walk of the target app that screenshots the
+ * result of every interaction. The saved images themselves decide what's a
+ * duplicate, so a screenshot is only dropped when it looks the same as one already
+ * saved.
  *
- * <p>Each tab is its own journey: the current tab's content is explored to the end,
- * then the next tab is opened and gets its own feature folder. The engine remembers
- * how screens connect, so when Back leaves the app, it reopens the app and returns
- * to whatever is still unexplored. Sign-in screens and permission dialogs are left
- * to the user: the crawl waits, then carries on by itself.
+ * <p>On each screen it tries every element, then scrolls for more, then moves on
+ * to tabs, and finally presses Back. If Back leaves the app, it reopens the app and
+ * returns to what's unfinished. Sign-in screens and permission dialogs are left to
+ * the user: the crawl waits, then carries on by itself.
  */
 public class CrawlerAccessibilityService extends AccessibilityService {
 
     public static volatile CrawlerAccessibilityService instance;
 
     private static final String SYSTEM_UI = "com.android.systemui";
-    private static final String FEATURE_HOME = "Home";
-    private static final String FEATURE_SIGN_IN = "Sign-in";
+    private static final String FOLDER_HOME = "Home";
+    private static final String FOLDER_SIGN_IN = "Sign-in";
+    private static final String FOLDER_DEFAULT = "Screen";
     private static final String DUMMY_TEXT = "test";
 
-    private static final long FIRST_STEP_DELAY = 1500;
-    private static final long AFTER_TAP_DELAY = 700;
-    private static final long AFTER_BACK_DELAY = 500;
-    private static final long SETTLE_DELAY = 300;
-    private static final long WAIT_POLL_DELAY = 800;
+    private static final long FIRST_STEP_DELAY = 1000;
+    private static final long AFTER_ACTION_DELAY = 40;
+    private static final long LOADING_POLL_DELAY = 100;
+    private static final long WAIT_POLL_DELAY = 500;
+    /** A screen counts as settled once no new frame has been drawn for this long. */
+    private static final long QUIET_MS = 90;
+    private static final long MAX_QUIET_WAIT_MS = 600;
 
-    private static final int MAX_STEPS = 100000;
-    private static final int MAX_SCROLLS_PER_SCREEN = 25;
-    private static final int MAX_TAPS_PER_SCREEN = 200;
-    /** Rows of a list that lead to a screen already seen before giving up on the list. */
-    private static final int MAX_KIND_MISSES = 3;
-    /** Distinct-looking screens with one template, from one list, before it counts as a feed. */
-    private static final int MAX_SAME_TEMPLATE = 5;
-    /** Reopening the app without finding anything new. Any new screen resets the count. */
+    private static final int MAX_STEPS = 1000000;
+    private static final int MAX_SCROLLS_PER_SCREEN = 50;
+    private static final int MAX_TAPS_PER_SCREEN = 500;
+    /** Interactions in a row without a new screenshot before the app counts as finished. */
+    private static final int MAX_FRUITLESS_INTERACTIONS = 500;
     private static final int MAX_FRUITLESS_RELAUNCHES = 8;
     private static final int MAX_ROUTE_TRIES = 6;
     private static final int MAX_BACKS_ON_SCREEN = 3;
     private static final int MAX_FOREIGN_BACKS = 4;
-    private static final int MAX_SETTLE_TRIES = 4;
-    private static final int MAX_LOADING_TRIES = 10;
+    private static final int MAX_LOADING_POLLS = 10;
     private static final int CLEAR_POLLS_TO_RESUME = 2;
+    private static final int MAX_FOLDER_DEPTH = 6;
 
-    private static final float SAME_STRUCTURE = 0.85f;
-    private static final float SAME_LABELS = 0.6f;
-    private static final float SAME_TEMPLATE_STRUCTURE = 0.9f;
-    private static final float SAME_TEMPLATE_LABELS = 0.5f;
+    /** Screens exposing fewer elements than this also get tapped on a grid of points. */
+    private static final int SPARSE_ELEMENTS = 3;
+    private static final int GRID_COLUMNS = 4;
+    private static final int GRID_ROWS = 8;
+    private static final float GRID_TOP = 0.1f;
+    private static final float GRID_BOTTOM = 0.92f;
+
+    private static final float SAME_FOLDER_STRUCTURE = 0.8f;
 
     private static final int HASH_WIDTH = 33;
     private static final int HASH_HEIGHT = 32;
@@ -79,18 +84,15 @@ public class CrawlerAccessibilityService extends AccessibilityService {
 
     private static final class Screen {
         final Set<String> structure = new HashSet<>();
-        final Set<String> labels = new HashSet<>();
         final Set<String> selected = new HashSet<>();
         final Set<String> tried = new HashSet<>();
-        final Map<String, Integer> kindMisses = new HashMap<>();
-        final Map<String, Integer> kindTemplates = new HashMap<>();
-        final Map<String, Screen> kindFirstTarget = new HashMap<>();
         /** Where each tap from this screen has led. */
         final Map<String, Screen> edges = new HashMap<>();
-        String activity;
-        String feature;
+        String folder;
+        String tabParentFolder;
         int taps;
         int scrolls;
+        int gridTaps;
         int routeTries;
         boolean exhausted;
     }
@@ -98,10 +100,9 @@ public class CrawlerAccessibilityService extends AccessibilityService {
     private static final class Tap {
         Screen source;
         String signature;
-        String kind;
         String label;
         boolean nav;
-        boolean row;
+        boolean bottomBar;
     }
 
     private HandlerThread engineThread;
@@ -114,9 +115,6 @@ public class CrawlerAccessibilityService extends AccessibilityService {
     private final List<Screen> screens = new ArrayList<>();
     private final List<long[]> savedImages = new ArrayList<>();
     private final Set<Screen> skippedAuth = new HashSet<>();
-    /** Bottom-bar tabs are the same everywhere, so each one is only opened once per run. */
-    private final Set<String> triedBottomTabs = new HashSet<>();
-    private final Map<String, Screen> bottomTabHomes = new HashMap<>();
 
     private String launcherPkg = "";
     private String currentActivity = "";
@@ -125,9 +123,9 @@ public class CrawlerAccessibilityService extends AccessibilityService {
     private Screen lastBackScreen;
     private Screen scrolledScreen;
     private Tap lastTap;
-    private String settleHash;
-    private int settleTries;
+    private int loadingPolls;
     private int steps;
+    private int fruitlessInteractions;
     private int fruitlessRelaunches;
     private int backsOnScreen;
     private int foreignBacks;
@@ -176,6 +174,7 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         }
         Crawler.notifyChanged();
         if (overlay != null) overlay.detach();
+        if (store != null) store.close();
         if (engineThread != null) engineThread.quitSafely();
         super.onDestroy();
     }
@@ -185,6 +184,7 @@ public class CrawlerAccessibilityService extends AccessibilityService {
     public void startCrawl() {
         overlay.attach();
         engine.post(() -> {
+            if (store != null) store.close();
             store = new ScreenshotStore(this, Crawler.targetLabel);
             beginRun();
         });
@@ -234,17 +234,15 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         screensByHash.clear();
         savedImages.clear();
         skippedAuth.clear();
-        triedBottomTabs.clear();
-        bottomTabHomes.clear();
         currentActivity = "";
         rootScreen = null;
         authScreen = null;
         lastBackScreen = null;
         scrolledScreen = null;
         lastTap = null;
-        settleHash = null;
-        settleTries = 0;
+        loadingPolls = 0;
         steps = 0;
+        fruitlessInteractions = 0;
         fruitlessRelaunches = 0;
         backsOnScreen = 0;
         foreignBacks = 0;
@@ -268,9 +266,8 @@ public class CrawlerAccessibilityService extends AccessibilityService {
 
     private void resumeRunning(String status) {
         Crawler.state = Crawler.State.RUNNING;
-        settleHash = null;
         Crawler.status(status);
-        reschedule(SETTLE_DELAY);
+        reschedule(AFTER_ACTION_DELAY);
     }
 
     private void finish(String why) {
@@ -278,7 +275,7 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         engine.removeCallbacks(stepRunnable);
         Crawler.state = Crawler.State.IDLE;
         Crawler.lastSummary = getString(R.string.summary_format, why, Crawler.shotCount,
-                Crawler.featureCount, Crawler.duplicatesSkipped, Crawler.permissionsGranted);
+                Crawler.folderCount, Crawler.duplicatesSkipped, Crawler.permissionsGranted);
         Crawler.status(why);
         overlay.detach();
         Intent back = new Intent(this, MainActivity.class)
@@ -296,6 +293,10 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         Crawler.State state = Crawler.state;
         if (state == Crawler.State.IDLE || state == Crawler.State.PAUSED) return;
         try {
+            if (state == Crawler.State.RUNNING) {
+                ScreenCaptureService capture = ScreenCaptureService.instance;
+                if (capture != null) capture.awaitQuietScreen(QUIET_MS, MAX_QUIET_WAIT_MS);
+            }
             AccessibilityNodeInfo root = getRootInActiveWindow();
             String pkg = root == null || root.getPackageName() == null
                     ? "" : root.getPackageName().toString();
@@ -306,23 +307,26 @@ public class CrawlerAccessibilityService extends AccessibilityService {
             }
         } catch (RuntimeException e) {
             Crawler.status("Step error: " + e.getClass().getSimpleName());
-            reschedule(AFTER_TAP_DELAY);
+            reschedule(LOADING_POLL_DELAY);
         }
     }
 
     private void stepRunning(AccessibilityNodeInfo root, String pkg) {
         if (Crawler.shotCount >= Crawler.maxShots) { finish(getString(R.string.summary_limit)); return; }
-        if (++steps > MAX_STEPS) { finish(getString(R.string.summary_steps)); return; }
-        if (root == null) { reschedule(AFTER_BACK_DELAY); return; }
+        if (++steps > MAX_STEPS || fruitlessInteractions > MAX_FRUITLESS_INTERACTIONS) {
+            finish(getString(R.string.summary_complete));
+            return;
+        }
+        if (root == null) { reschedule(LOADING_POLL_DELAY); return; }
 
         if (pkg.equals(getPackageName()) || pkg.equals(SYSTEM_UI) && !isBiometricPrompt(root)) {
-            reschedule(AFTER_BACK_DELAY);
+            reschedule(LOADING_POLL_DELAY);
         } else if (isPermissionDialog(pkg)) {
             enterPermissionWait();
         } else if (isExternalAuth(pkg) || pkg.equals(SYSTEM_UI)) {
             enterAuthWait(null);
         } else if (pkg.equals(launcherPkg) || pkg.isEmpty()) {
-            onLeftToHome();
+            if (seenTarget) relaunchOrFinish(); else reschedule(LOADING_POLL_DELAY);
         } else if (!pkg.equals(Crawler.targetPackage)) {
             onForeignApp();
         } else {
@@ -332,88 +336,76 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         }
     }
 
-    private void onLeftToHome() {
-        if (!seenTarget) { reschedule(AFTER_TAP_DELAY); return; }
-        relaunchOrFinish();
-    }
-
     private void onForeignApp() {
         if (++foreignBacks > MAX_FOREIGN_BACKS) { relaunchOrFinish(); return; }
         performGlobalAction(GLOBAL_ACTION_BACK);
-        reschedule(AFTER_BACK_DELAY);
+        reschedule(AFTER_ACTION_DELAY);
     }
 
     private void relaunchOrFinish() {
-        if (hasUnexplored() && fruitlessRelaunches < MAX_FRUITLESS_RELAUNCHES && launchTarget()) {
+        if (hasUnfinished() && fruitlessRelaunches < MAX_FRUITLESS_RELAUNCHES && launchTarget()) {
             fruitlessRelaunches++;
             foreignBacks = 0;
             backsOnScreen = 0;
             lastTap = null;
-            settleHash = null;
             reschedule(FIRST_STEP_DELAY);
         } else {
             finish(getString(R.string.summary_complete));
         }
     }
 
-    private boolean hasUnexplored() {
+    private boolean hasUnfinished() {
         for (Screen s : screens) if (!s.exhausted) return true;
         return false;
     }
 
     private void exploreTarget(AccessibilityNodeInfo root) {
         ScreenAnalyzer.Result a = analyze(root);
-
-        // Don't judge or photograph a screen until its layout has stopped changing.
-        if (!a.hash.equals(settleHash) && settleTries < MAX_SETTLE_TRIES) {
-            settleHash = a.hash;
-            settleTries++;
-            reschedule(SETTLE_DELAY);
+        if (a.loading && loadingPolls < MAX_LOADING_POLLS) {
+            loadingPolls++;
+            reschedule(LOADING_POLL_DELAY);
             return;
         }
-        if (a.loading && settleTries < MAX_LOADING_TRIES) {
-            settleTries++;
-            reschedule(SETTLE_DELAY);
-            return;
-        }
-        settleTries = 0;
+        loadingPolls = 0;
 
         Tap arrivedBy = lastTap;
+        boolean interacted = arrivedBy != null || scrolledScreen != null;
         lastTap = null;
-        Screen screen = findKnownScreen(a, arrivedBy);
+        Screen screen = findKnownScreen(a);
         scrolledScreen = null;
         boolean isNew = screen == null;
-        if (isNew) {
-            screen = addScreen(a, arrivedBy);
-            fruitlessRelaunches = 0;
+        if (isNew) screen = addScreen(a, arrivedBy);
+        if (arrivedBy != null && arrivedBy.source != screen) {
+            arrivedBy.source.edges.put(arrivedBy.signature, screen);
         }
-        recordArrival(arrivedBy, screen, isNew);
-        markSelectedTabs(screen, a);
+        for (ScreenAnalyzer.Candidate c : a.candidates) {
+            if (c.selected) screen.tried.add(c.signature);
+        }
 
+        // Every interaction gets a screenshot. Only arriving back by Back doesn't.
+        if (isNew || interacted && !a.auth) capture(screen, a);
         if (a.auth && !skippedAuth.contains(screen)) {
-            if (isNew) capture(screen, a);
             enterAuthWait(screen);
             return;
         }
-        if (isNew) capture(screen, a);
         if (a.auth) {
             screen.exhausted = true;
             retreat(screen);
             return;
         }
 
-        // Content first, then more content by scrolling, and only then the next tab.
-        ScreenAnalyzer.Candidate next = nextContent(screen, a);
+        // Depth first: this screen's content, then more of it by scrolling, then tabs.
+        ScreenAnalyzer.Candidate next = nextElement(screen, a, false);
         if (next != null) {
             act(screen, next);
         } else if (scrollOn(screen, a)) {
             scrolledScreen = screen;
-            settleHash = null;
-            reschedule(AFTER_TAP_DELAY);
-        } else if ((next = nextBottomTab(screen, a)) != null) {
+            fruitlessInteractions++;
+            reschedule(AFTER_ACTION_DELAY);
+        } else if (a.candidates.size() < SPARSE_ELEMENTS && screen.gridTaps < GRID_COLUMNS * GRID_ROWS) {
+            tapGridPoint(screen);
+        } else if ((next = nextElement(screen, a, true)) != null) {
             act(screen, next);
-            // With no tabs left to open from here, nothing is pending on this screen.
-            if (nextBottomTab(screen, a) == null) screen.exhausted = true;
         } else {
             screen.exhausted = true;
             leaveExhausted(screen, a);
@@ -427,9 +419,9 @@ public class CrawlerAccessibilityService extends AccessibilityService {
 
     private void act(Screen screen, ScreenAnalyzer.Candidate next) {
         tap(screen, next, true);
-        settleHash = null;
         backsOnScreen = 0;
-        reschedule(AFTER_TAP_DELAY);
+        fruitlessInteractions++;
+        reschedule(AFTER_ACTION_DELAY);
     }
 
     private boolean scrollOn(Screen screen, ScreenAnalyzer.Result a) {
@@ -439,7 +431,7 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         return true;
     }
 
-    /** Nothing left here: head for the most recent unfinished screen, or finish. */
+    /** Nothing left here: go back up, or head straight for the nearest unfinished screen. */
     private void leaveExhausted(Screen screen, ScreenAnalyzer.Result a) {
         Screen target = unfinishedScreen();
         if (target == null) {
@@ -449,8 +441,7 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         ScreenAnalyzer.Candidate step = routeStep(screen, target, a);
         if (step != null) {
             tap(screen, step, false);
-            settleHash = null;
-            reschedule(AFTER_TAP_DELAY);
+            reschedule(AFTER_ACTION_DELAY);
         } else {
             retreat(screen);
         }
@@ -471,9 +462,6 @@ public class CrawlerAccessibilityService extends AccessibilityService {
 
     /** The element on this screen that leads toward {@code target}, if the way is known. */
     private ScreenAnalyzer.Candidate routeStep(Screen from, Screen target, ScreenAnalyzer.Result a) {
-        for (ScreenAnalyzer.Candidate c : a.candidates) {
-            if (c.bottomBar && bottomTabHomes.get(c.signature) == target) return c;
-        }
         String first = firstStepToward(from, target);
         if (first == null) return null;
         for (ScreenAnalyzer.Candidate c : a.candidates) {
@@ -511,9 +499,8 @@ public class CrawlerAccessibilityService extends AccessibilityService {
             relaunchOrFinish();
             return;
         }
-        settleHash = null;
         performGlobalAction(GLOBAL_ACTION_BACK);
-        reschedule(AFTER_BACK_DELAY);
+        reschedule(AFTER_ACTION_DELAY);
     }
 
     // ---- Waiting on the user ------------------------------------------------
@@ -580,38 +567,16 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         }
     }
 
-    // ---- Screen identity and features ---------------------------------------
+    // ---- Screens and folders ------------------------------------------------
 
-    private Screen findKnownScreen(ScreenAnalyzer.Result a, Tap arrivedBy) {
+    /** Screens only merge on an exact match. After a scroll, it's still the same screen. */
+    private Screen findKnownScreen(ScreenAnalyzer.Result a) {
         Screen known = screensByHash.get(a.hash);
-        if (known != null) return known;
-        if (scrolledScreen != null && scrolledScreen.selected.equals(a.selected)) {
-            // Scrolling reveals more of the same screen.
+        if (known == null && scrolledScreen != null && scrolledScreen.selected.equals(a.selected)) {
             known = scrolledScreen;
-            known.structure.addAll(a.structure);
-            known.labels.addAll(a.labels);
-        } else {
-            for (Screen s : screens) {
-                if (isSameScreen(s, a)) { known = s; break; }
-            }
+            screensByHash.put(a.hash, known);
         }
-        if (known == null && arrivedBy != null && arrivedBy.row) {
-            Screen sibling = arrivedBy.source.kindFirstTarget.get(arrivedBy.kind);
-            if (sibling != null
-                    && similarity(sibling.structure, a.structure) >= SAME_TEMPLATE_STRUCTURE
-                    && similarity(sibling.labels, a.labels) >= SAME_TEMPLATE_LABELS) {
-                known = sibling; // Another item's detail page: the same screen for an inventory.
-            }
-        }
-        if (known != null) screensByHash.put(a.hash, known);
         return known;
-    }
-
-    private static boolean isSameScreen(Screen s, ScreenAnalyzer.Result a) {
-        return s.selected.equals(a.selected)
-                && s.activity.equals(a.activity)
-                && similarity(s.structure, a.structure) >= SAME_STRUCTURE
-                && similarity(s.labels, a.labels) >= SAME_LABELS;
     }
 
     private static float similarity(Set<String> a, Set<String> b) {
@@ -624,54 +589,44 @@ public class CrawlerAccessibilityService extends AccessibilityService {
     private Screen addScreen(ScreenAnalyzer.Result a, Tap arrivedBy) {
         Screen s = new Screen();
         s.structure.addAll(a.structure);
-        s.labels.addAll(a.labels);
         s.selected.addAll(a.selected);
-        s.activity = a.activity;
-        s.feature = featureFor(a, arrivedBy);
+        assignFolder(s, a, arrivedBy);
         if (rootScreen == null && !a.auth) rootScreen = s;
         screens.add(s);
         screensByHash.put(a.hash, s);
+        fruitlessRelaunches = 0;
         return s;
     }
 
-    private void recordArrival(Tap arrivedBy, Screen screen, boolean isNew) {
-        if (arrivedBy == null) return;
-        Screen source = arrivedBy.source;
-        if (source != screen) source.edges.put(arrivedBy.signature, screen);
-        if (!arrivedBy.row) return;
-        if (isNew) {
-            Screen first = source.kindFirstTarget.get(arrivedBy.kind);
-            if (first == null) {
-                source.kindFirstTarget.put(arrivedBy.kind, screen);
-            } else if (similarity(first.structure, screen.structure) >= SAME_TEMPLATE_STRUCTURE
-                    && source.kindTemplates.merge(arrivedBy.kind, 1, Integer::sum) >= MAX_SAME_TEMPLATE) {
-                source.kindMisses.put(arrivedBy.kind, MAX_KIND_MISSES);
-            }
-        } else if (source != screen) {
-            // A row that does nothing says little, but one reaching a known screen suggests a feed.
-            source.kindMisses.merge(arrivedBy.kind, 1, Integer::sum);
-        }
-    }
-
-    private void markSelectedTabs(Screen screen, ScreenAnalyzer.Result a) {
-        for (ScreenAnalyzer.Candidate c : a.candidates) {
-            if (!c.selected) continue;
-            screen.tried.add(c.signature);
-            if (c.bottomBar) {
-                triedBottomTabs.add(c.signature);
-                bottomTabHomes.put(c.signature, screen);
+    /** Folders mirror the path taken: each tab at the top, then one level per screen opened. */
+    private void assignFolder(Screen s, ScreenAnalyzer.Result a, Tap by) {
+        if (a.auth) {
+            s.folder = FOLDER_SIGN_IN;
+        } else if (rootScreen == null) {
+            s.folder = FOLDER_HOME;
+        } else if (by == null) {
+            s.folder = firstNonEmpty(a.title, a.activity, FOLDER_DEFAULT);
+        } else {
+            String name = firstNonEmpty(by.label, a.title, a.activity, FOLDER_DEFAULT);
+            Screen from = by.source;
+            if (by.bottomBar) {
+                s.folder = name;
+            } else if (by.nav) {
+                // Sibling tabs sit side by side instead of nesting inside each other.
+                s.tabParentFolder = from.tabParentFolder != null ? from.tabParentFolder : from.folder;
+                s.folder = nest(s.tabParentFolder, name);
+            } else if (similarity(from.structure, a.structure) >= SAME_FOLDER_STRUCTURE) {
+                s.folder = from.folder;
+            } else {
+                s.folder = nest(from.folder, name);
             }
         }
     }
 
-    private String featureFor(ScreenAnalyzer.Result a, Tap arrivedBy) {
-        if (a.auth) return FEATURE_SIGN_IN;
-        if (rootScreen == null) return FEATURE_HOME;
-        if (arrivedBy == null) return firstNonEmpty(a.title, a.activity, FEATURE_HOME);
-        if (arrivedBy.source == rootScreen || arrivedBy.nav) {
-            return firstNonEmpty(arrivedBy.label, a.title, a.activity);
-        }
-        return arrivedBy.source.feature;
+    private static String nest(String parent, String name) {
+        int depth = parent.split(ScreenshotStore.SEPARATOR).length;
+        return depth >= MAX_FOLDER_DEPTH ? parent : parent + ScreenshotStore.SEPARATOR
+                + name.replace(ScreenshotStore.SEPARATOR, " ");
     }
 
     private static String firstNonEmpty(String... options) {
@@ -679,22 +634,12 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         return "";
     }
 
-    // ---- Tapping ------------------------------------------------------------
+    // ---- Interacting --------------------------------------------------------
 
-    private ScreenAnalyzer.Candidate nextContent(Screen screen, ScreenAnalyzer.Result a) {
+    private ScreenAnalyzer.Candidate nextElement(Screen screen, ScreenAnalyzer.Result a, boolean bottomBar) {
         if (screen.taps >= MAX_TAPS_PER_SCREEN) return null;
         for (ScreenAnalyzer.Candidate c : a.candidates) {
-            if (c.bottomBar || screen.tried.contains(c.signature)) continue;
-            Integer misses = screen.kindMisses.get(c.kind);
-            if (misses != null && misses >= MAX_KIND_MISSES) continue;
-            return c;
-        }
-        return null;
-    }
-
-    private ScreenAnalyzer.Candidate nextBottomTab(Screen screen, ScreenAnalyzer.Result a) {
-        for (ScreenAnalyzer.Candidate c : a.candidates) {
-            if (c.bottomBar && !triedBottomTabs.contains(c.signature)) return c;
+            if (c.bottomBar == bottomBar && !screen.tried.contains(c.signature)) return c;
         }
         return null;
     }
@@ -703,16 +648,14 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         if (exploring) {
             screen.tried.add(c.signature);
             screen.taps++;
-            if (c.bottomBar) triedBottomTabs.add(c.signature);
         }
 
         Tap t = new Tap();
         t.source = screen;
         t.signature = c.signature;
-        t.kind = c.kind;
         t.label = c.label;
         t.nav = c.nav;
-        t.row = exploring && c.row;
+        t.bottomBar = c.bottomBar;
         lastTap = t;
 
         if (c.editable) {
@@ -723,15 +666,35 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         AccessibilityNodeInfo clickable = c.node;
         while (clickable != null && !clickable.isClickable()) clickable = clickable.getParent();
         if (clickable == null || !clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-            tapCenter(c.node);
+            Rect r = new Rect();
+            c.node.getBoundsInScreen(r);
+            tapAt(r.centerX(), r.centerY());
         }
     }
 
-    private void tapCenter(AccessibilityNodeInfo node) {
-        Rect r = new Rect();
-        node.getBoundsInScreen(r);
+    /** For games, canvases and web content, which expose little to tap by name. */
+    private void tapGridPoint(Screen screen) {
+        int index = screen.gridTaps++;
+        DisplayMetrics dm = getResources().getDisplayMetrics();
+        float cellWidth = dm.widthPixels / (float) GRID_COLUMNS;
+        float top = dm.heightPixels * GRID_TOP;
+        float cellHeight = dm.heightPixels * (GRID_BOTTOM - GRID_TOP) / GRID_ROWS;
+
+        Tap t = new Tap();
+        t.source = screen;
+        t.signature = "grid|" + index;
+        t.label = "";
+        lastTap = t;
+
+        tapAt(cellWidth * (index % GRID_COLUMNS + 0.5f),
+                top + cellHeight * (index / GRID_COLUMNS + 0.5f));
+        fruitlessInteractions++;
+        reschedule(AFTER_ACTION_DELAY);
+    }
+
+    private void tapAt(float x, float y) {
         Path p = new Path();
-        p.moveTo(r.centerX(), r.centerY());
+        p.moveTo(x, y);
         dispatchGesture(new GestureDescription.Builder()
                 .addStroke(new GestureDescription.StrokeDescription(p, 0, 50))
                 .build(), null, null);
@@ -753,24 +716,20 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         overlay.showAfterCapture();
         if (bitmap == null) return;
 
-        try {
-            long[] image = imageHash(bitmap);
-            if (image == null) {
-                Crawler.status(getString(R.string.status_protected));
-            } else if (isDuplicateImage(image)) {
-                Crawler.duplicatesSkipped++;
-                Crawler.notifyChanged();
-            } else if (store.save(bitmap, screen.feature, firstNonEmpty(a.title, a.activity))) {
-                savedImages.add(image);
-                Crawler.shotCount++;
-                Crawler.featureCount = store.featureCount();
-                Crawler.status(getString(R.string.status_saved, screen.feature));
-            } else {
-                Crawler.status(getString(R.string.status_save_failed));
-            }
-        } finally {
+        long[] image = imageHash(bitmap);
+        if (image == null || isDuplicateImage(image)) {
+            if (image != null) Crawler.duplicatesSkipped++;
             bitmap.recycle();
+            Crawler.notifyChanged();
+            return;
         }
+        // The store saves in the background and recycles the bitmap when it's done.
+        store.save(bitmap, screen.folder, firstNonEmpty(a.title, a.activity, FOLDER_DEFAULT));
+        savedImages.add(image);
+        fruitlessInteractions = 0;
+        Crawler.shotCount++;
+        Crawler.folderCount = store.folderCount();
+        Crawler.status(getString(R.string.status_saved, screen.folder));
     }
 
     private boolean isDuplicateImage(long[] image) {

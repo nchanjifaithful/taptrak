@@ -3,6 +3,21 @@
 Each release's notes are built from the newest section below, followed by the
 commits in that build. Add a section here when a change is worth describing.
 
+## 2.3
+
+Captures every interaction, much faster.
+
+- **A screenshot after every interaction:** each tap, text entry, toggle and scroll.
+  A screenshot is only dropped when the image matches one already saved.
+- **Full depth-first walk.** Every element on every screen is tried, including all
+  list rows and switches. Screens no longer merge unless they match exactly.
+- **Screens with little to tap** (games, web content) also get tapped on a grid.
+- **Much shorter waits.** It moves on as soon as the screen stops changing, and saves
+  in the background.
+- **Features are gone.** Folders simply follow the path taken through the app.
+- **Screenshots are now JPEG**, which saves far faster than PNG.
+- **Default maximum is now 10000.**
+
 ## 2.2
 
 - **Updates now install over the existing app.** Every build used to be signed with a

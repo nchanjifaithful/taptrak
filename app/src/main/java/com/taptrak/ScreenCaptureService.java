@@ -42,8 +42,8 @@ public class ScreenCaptureService extends Service {
 
     private static final String CHANNEL_ID = "capture";
     private static final int NOTIF_ID = 42;
-    private static final long FRESH_FRAME_TIMEOUT = 300;
-    private static final long FRESH_FRAME_POLL = 16;
+    private static final long FRESH_FRAME_TIMEOUT = 80;
+    private static final long FRAME_POLL = 8;
 
     /** Live instance, so the engine can request a frame. Null when capture isn't granted. */
     public static volatile ScreenCaptureService instance;
@@ -156,10 +156,25 @@ public class ScreenCaptureService extends Service {
             synchronized (frameLock) {
                 if (latestFrame != null && latestFrameAt >= uptimeMillis) break;
             }
-            SystemClock.sleep(FRESH_FRAME_POLL);
+            SystemClock.sleep(FRAME_POLL);
         }
         synchronized (frameLock) {
             return latestFrame == null ? null : imageToBitmap(latestFrame);
+        }
+    }
+
+    /**
+     * Blocks until nothing new has been drawn for {@code quietMs}, which is how the engine
+     * knows a screen has finished changing. Gives up after {@code maxWaitMs}, for video and
+     * other constant animation. Call from a background thread.
+     */
+    public void awaitQuietScreen(long quietMs, long maxWaitMs) {
+        long deadline = SystemClock.uptimeMillis() + maxWaitMs;
+        while (SystemClock.uptimeMillis() < deadline) {
+            synchronized (frameLock) {
+                if (SystemClock.uptimeMillis() - latestFrameAt >= quietMs) return;
+            }
+            SystemClock.sleep(FRAME_POLL);
         }
     }
 
