@@ -7,10 +7,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <!-- Required on Android 13+ so the persistent capture notification is visible. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- Lets the control screen launch the app under test by package name. -->
+    <!-- Lists installed apps in the picker and launches the chosen one. -->
     <uses-permission
         android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
+    <!-- Only Android 9 and older need this to save to Pictures/. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
 
     <application
         android:allowBackup="false"
@@ -29,7 +33,12 @@
             </intent-filter>
         </activity>
 
-        <!-- The crawl engine. The user must enable it in Settings > Accessibility. -->
+        <activity
+            android:name=".AppPickerActivity"
+            android:exported="false"
+            android:windowSoftInputMode="stateHidden|adjustResize" />
+
+        <!-- The capture engine. The user must enable it in Settings > Accessibility. -->
         <service
             android:name=".CrawlerAccessibilityService"
             android:exported="false"

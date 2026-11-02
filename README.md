@@ -1,61 +1,81 @@
 # TapTrak
 
-A lightweight Android **automated UI-exploration tool**. You point it at one app;
-it launches that app and walks through it on its own — tapping interactive
-elements in a depth-first order, screenshotting each new screen, filling text
-fields with dummy text to get past forms, and pressing Back to retreat when a
-screen has nothing new left to try. It's the same idea as Google's *TapTrak*,
-*DroidBot* and *Fastbot*, meant for **QA, regression and accessibility testing of
-apps you own or are authorised to test**.
+A lightweight Android tool that explores an app by itself and saves **one
+screenshot per distinct screen, organised by feature**. It's meant for QA,
+regression and accessibility testing of **apps you own or are authorised to test**.
 
-- No third-party libraries — only the Android framework, so the APK is tiny.
-- Screenshots and a `crawl_log.csv` are written to the app's own folder:
-  `Android/data/com.taptrak/files/crawls/<package>_<timestamp>/`.
+- No third-party libraries, only the Android framework, so the APK stays tiny.
+- Pick the app from a list of what's on the phone.
+- Control the run from a floating panel, and stay in charge of sign-ins and permissions.
 
-## How it works
+## Where screenshots go
 
-| Piece | Role |
+Everything is in the phone's gallery and file manager:
+
+```
+Pictures/TapTrak/<App name>/<Feature>/01_<Screen title>.png
+```
+
+The app's home screen goes in `Home`, and sign-in screens go in `Sign-in`. Other
+features are named after what opened them, such as the `Settings` tab.
+
+## How it decides what to capture
+
+| Behaviour | How it works |
 |---|---|
-| `CrawlerAccessibilityService` | The engine. Reads the layout via `AccessibilityNodeInfo`, hashes each screen's **structure** to tell new screens from already-seen ones (the "visited" set), ranks elements (buttons/tabs/list items above checkboxes/switches), taps them, fills fields, scrolls, and backs out of dead ends. |
-| `ScreenCaptureService` | Holds the `MediaProjection` session and returns a `Bitmap` of the current screen on request. Runs as a foreground service with an ongoing notification. |
-| `MainActivity` | Control screen: enable the service, grant capture, set the target package and screenshot cap, start/stop. |
+| **Features** | A feature starts when the crawler taps something on the app's home screen, or a tab or navigation item anywhere. Screens reached from there belong to that feature. At most 15 screenshots are kept per feature. |
+| **No repeated screens** | A screen's identity is the set of view types and fixed labels it contains, ignoring positions, list contents and counts. Scrolling, new list rows and changing values don't make a screen look new, and a 85% match counts as the same screen. |
+| **No repeated images** | A 256-bit visual hash of each screenshot is compared with every other one in the run, and near-identical images are dropped. |
+| **Lists** | After two rows of a list lead nowhere new, the rest of that list is skipped. A news feed costs a few taps, while a settings list with different destinations is still walked. |
+| **Toggles and risky actions** | Switches and checkboxes aren't touched. Neither is anything labelled like log out, delete, buy, pay, subscribe, send, call, report, block or reset. |
 
-Design choices that match your request: DFS with Back-based retreat, structural
-**layout-hash deduplication**, a **differential-capture** guard that discards a
-shot less than ~5% different from the previous one, heuristic element
-prioritisation, and automatic form-filling.
+## Sign-in and permission requests
 
-## Deliberate limitation — no `FLAG_SECURE` bypass
+- **Sign-in screens** (password or one-time-code fields, or "continue with" buttons):
+  the screen is captured once, while empty, and the crawl pauses. Sign in and it
+  continues by itself, or tap ⏭ to skip that screen.
+- **Permission requests from the app:** the crawl waits for your answer, then shows
+  whether it was granted. ⏭ dismisses the request.
+- **Passwords** are never filled in or read.
 
-Windows that set `FLAG_SECURE` (banking apps, DRM video, some login screens) opt
-out of screen capture at the OS level; `MediaProjection` captures them as black.
-This tool **does not** defeat that protection (no Xposed/LSPosed hook, no root
-requirement). That protection exists specifically to stop capture of sensitive
-screens, so it's left intact.
+These are detected from what's on the screen, so an unusual sign-in screen may not
+be recognised. Use Pause if the crawler carries on past one.
+
+## The floating panel
+
+It's hidden for the instant of each screenshot, so it never appears in one. Drag to
+move it, and tap it to collapse or expand.
+
+| Button | What it does |
+|---|---|
+| ⏸ / ▶ | Pause or resume. While paused you can use the app freely. |
+| ⏭ | Appears while waiting on you: skip the sign-in screen or dismiss the permission request. |
+| ↻ | Restart. Deletes this run's screenshots (earlier runs are kept) and starts over. |
+| ⏹ | Stop and return to TapTrak. |
+
+## Deliberate limitation: no `FLAG_SECURE` bypass
+
+Windows that set `FLAG_SECURE` (banking apps, DRM video, some login screens) opt out
+of screen capture at the OS level and capture as black. TapTrak skips those frames
+and does not defeat the protection (no Xposed/LSPosed hook, no root requirement).
 
 ## Permissions it requests, and why
 
-- **Accessibility service** — to read the layout and perform taps/gestures. You
-  enable it manually in Settings > Accessibility; Android cannot grant it silently.
-- **Screen capture** (`MediaProjection`) — the one-time "Allow screen recording"
-  dialog. The ongoing notification is your signal that capture is on.
-- **Foreground service / notifications** — required by Android to run the capture
-  service and show that notification.
+The setup list ticks each item as it's accepted.
 
-It uses scoped storage only (no broad file permission) and does nothing in the
-background once you stop the crawl.
+- **Accessibility service:** reads the layout, performs taps and shows the panel. You
+  enable it manually in Settings > Accessibility. On Android 13+, if it's greyed out,
+  open TapTrak's App info, tap ⋮ and choose **Allow restricted settings**.
+- **Screen capture** (`MediaProjection`): choose **Entire screen** in the dialog.
+- **Notifications** (optional, Android 13+): shows the capture notification.
+- **Storage** (Android 9 and older only): saves to `Pictures/`.
+- **All-apps visibility** (`QUERY_ALL_PACKAGES`): fills the app list.
 
 ## Building it
 
-You need an Android SDK somewhere; this project has no other dependencies.
-Three ways, easiest first:
-
 ### 1. Cloud build + Release (nothing to install)
-Push this folder to a GitHub repo. The included workflow
-(`.github/workflows/build.yml`) builds the APK with Google's official tools on
-GitHub's servers and **publishes it to the repo's Releases** automatically.
-Open the repo's **Releases** page and download **TapTrak.apk** from the latest
-release. (The same file is also under **Actions → the run → Artifacts**.)
+Every push to `main` runs `.github/workflows/build.yml` on GitHub's servers and
+publishes **TapTrak.apk** to the repo's **Releases** page.
 
 ### 2. Android Studio / Gradle
 Open the folder in Android Studio and Run, or:
@@ -71,17 +91,14 @@ variables in `build-standalone.sh` at them, and run it. Produces `TapTrak.apk`.
 ## Using it
 
 1. Install the APK and open it.
-2. **1. Enable accessibility service** → turn on *TapTrak engine*.
-3. **2. Grant screen capture** → accept the dialog.
-4. Enter the **target package** (e.g. `com.example.myapp`) and a screenshot cap.
-5. **3. Start crawl.** The target app opens and the crawler drives it. Collect
-   the screenshots from the folder above when it stops (it stops at the cap, on
-   returning to the home screen, or when you tap **Stop**).
+2. Accept the setup items.
+3. Choose an app and set the screenshot limit.
+4. Tap **Start capture**. TapTrak returns with a summary when the run ends.
 
 > Use this only on apps you own or have permission to test. Driving or capturing
 > someone else's app or account without authorisation may be unlawful.
 
 ## Signing
-Debug-signed by default — fine for your own devices, not for the Play Store.
-Swap in your own release key (see the `signingConfig` in `app/build.gradle.kts`,
-or the `KEYSTORE` variables in `build-standalone.sh`) before distributing.
+Debug-signed by default, which is fine for your own devices but not the Play Store.
+Swap in your own release key (see the `signingConfig` in `app/build.gradle.kts`, or
+the `KEYSTORE` variables in `build-standalone.sh`) before distributing.

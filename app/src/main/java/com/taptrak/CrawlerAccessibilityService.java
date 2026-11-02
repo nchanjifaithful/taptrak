@@ -3,6 +3,7 @@ package com.taptrak;
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
 import android.content.Intent;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.Bitmap;
@@ -11,267 +12,546 @@ import android.graphics.Rect;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
-import android.text.TextUtils;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.OutputStreamWriter;
-import java.security.MessageDigest;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 /**
- * The crawl engine. Runs as an Android AccessibilityService so it can read the
- * on-screen layout of the app under test and drive it: it taps interactive
- * elements in a depth-first order, fills text fields with dummy text to get past
- * forms, asks {@link ScreenCaptureService} to screenshot each newly seen screen,
- * and presses Back to retreat when a screen has no untried elements left.
+ * The capture engine. Explores the target app depth-first through the
+ * accessibility tree, saves one screenshot per distinct screen, and files each
+ * under the feature it belongs to.
  *
- * <p>Screens are identified by a structural hash of their layout (the "visited"
- * set), so the crawler does not loop and does not re-screenshot a screen it has
- * already recorded.
+ * <p>A feature starts when the crawler taps something on the app's home screen, or
+ * a navigation element anywhere; screens reached from there inherit it. Sign-in
+ * screens and permission dialogs are left to the user: the crawl waits, then
+ * carries on by itself.
  */
 public class CrawlerAccessibilityService extends AccessibilityService {
 
     public static volatile CrawlerAccessibilityService instance;
 
-    private HandlerThread engineThread;
-    private Handler engine;
-    private final Runnable stepRunnable = new Runnable() {
-        @Override public void run() { doStep(); }
-    };
-
-    // Downscaled luminance of the last saved screenshot, for the differential guard.
-    private int[] lastThumb;
-
-    private String launcherPkg = "";
     private static final String SYSTEM_UI = "com.android.systemui";
-
-    // How many times we've scrolled a given screen, to bound scroll exploration.
-    private final Map<String, Integer> scrollCounts = new HashMap<String, Integer>();
+    private static final String FEATURE_HOME = "Home";
+    private static final String FEATURE_SIGN_IN = "Sign-in";
+    private static final String DUMMY_TEXT = "test";
 
     private static final long FIRST_STEP_DELAY = 1500;
-    private static final long AFTER_ACTION_DELAY = 750;
-    private static final long AFTER_BACK_DELAY = 550;
-    private static final int MAX_SCROLLS_PER_SCREEN = 8;
+    private static final long AFTER_TAP_DELAY = 700;
+    private static final long AFTER_BACK_DELAY = 500;
+    private static final long SETTLE_DELAY = 300;
+    private static final long WAIT_POLL_DELAY = 800;
+
+    private static final int MAX_STEPS = 1500;
+    private static final int MAX_SCROLLS_PER_SCREEN = 6;
+    private static final int MAX_TAPS_PER_SCREEN = 40;
+    private static final int MAX_SHOTS_PER_FEATURE = 15;
+    /** Two list rows leading nowhere new means the rest won't either. */
+    private static final int MAX_KIND_MISSES = 2;
+    private static final int MAX_RELAUNCHES = 3;
+    private static final int MAX_BACKS_ON_SCREEN = 3;
+    private static final int MAX_FOREIGN_BACKS = 4;
+    private static final int MAX_SETTLE_TRIES = 4;
+    private static final int MAX_LOADING_TRIES = 10;
+    private static final int CLEAR_POLLS_TO_RESUME = 2;
+    private static final float SAME_SCREEN_SIMILARITY = 0.85f;
+    /** Differing bits out of 256 below which two images count as the same picture. */
+    private static final int SAME_IMAGE_BITS = 12;
+    private static final int BLANK_LUMA_RANGE = 6;
+
+    private static final class Screen {
+        final Set<String> tokens = new HashSet<>();
+        final Set<String> tried = new HashSet<>();
+        final Map<String, Integer> kindMisses = new HashMap<>();
+        String feature;
+        int taps;
+        int scrolls;
+        boolean exhausted;
+    }
+
+    private static final class Tap {
+        Screen source;
+        String kind;
+        String label;
+        boolean nav;
+    }
+
+    private HandlerThread engineThread;
+    private Handler engine;
+    private OverlayController overlay;
+    private ScreenshotStore store;
+    private final Runnable stepRunnable = this::doStep;
+
+    private final Map<String, Screen> screensByHash = new HashMap<>();
+    private final List<Screen> screens = new ArrayList<>();
+    private final List<long[]> savedImages = new ArrayList<>();
+    private final Set<Screen> skippedAuth = new HashSet<>();
+
+    private String launcherPkg = "";
+    private String currentActivity = "";
+    private Screen rootScreen;
+    private Screen authScreen;
+    private Screen lastBackScreen;
+    private Screen scrolledScreen;
+    private Tap lastTap;
+    private String settleHash;
+    private int settleTries;
+    private int steps;
+    private int relaunches;
+    private int backsOnScreen;
+    private int foreignBacks;
+    private int clearPolls;
+    private int grantedBeforePrompt;
+    private boolean seenTarget;
+
+    // ---- Lifecycle ----------------------------------------------------------
 
     @Override
     public void onServiceConnected() {
         super.onServiceConnected();
         instance = this;
-        ResolveInfo ri = getPackageManager().resolveActivity(
+        engineThread = new HandlerThread("engine");
+        engineThread.start();
+        engine = new Handler(engineThread.getLooper());
+        overlay = new OverlayController(this);
+        ResolveInfo home = getPackageManager().resolveActivity(
                 new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME),
                 PackageManager.MATCH_DEFAULT_ONLY);
-        if (ri != null && ri.activityInfo != null) launcherPkg = ri.activityInfo.packageName;
-        Crawler.status("Accessibility service connected.");
+        if (home != null && home.activityInfo != null) launcherPkg = home.activityInfo.packageName;
+        Crawler.notifyChanged();
     }
 
-    /** Called from the control UI to begin a run. */
-    public static boolean startCrawl() {
-        CrawlerAccessibilityService s = instance;
-        if (s == null) return false;
-        s.beginCrawl();
-        return true;
+    @Override
+    public void onAccessibilityEvent(AccessibilityEvent event) {
+        if (event.getEventType() != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return;
+        CharSequence pkg = event.getPackageName();
+        CharSequence cls = event.getClassName();
+        if (pkg == null || cls == null || !Crawler.targetPackage.contentEquals(pkg)) return;
+        String name = cls.toString();
+        if (name.startsWith("android.")) return;
+        currentActivity = name.substring(name.lastIndexOf('.') + 1)
+                .replace("Activity", "").replace("Fragment", "");
     }
 
-    /** Called from the control UI to stop a run. */
-    public static void stopCrawl() {
-        CrawlerAccessibilityService s = instance;
-        if (s != null) s.endCrawl("Stopped.");
-    }
+    @Override
+    public void onInterrupt() {}
 
-    private void beginCrawl() {
-        Crawler.reset();
-        lastThumb = null;
-        scrollCounts.clear();
-        Crawler.running = true;
-
-        if (engineThread == null) {
-            engineThread = new HandlerThread("engine");
-            engineThread.start();
-            engine = new Handler(engineThread.getLooper());
+    @Override
+    public void onDestroy() {
+        if (instance == this) instance = null;
+        if (Crawler.isActive()) {
+            Crawler.state = Crawler.State.IDLE;
+            Crawler.status("Accessibility service stopped.");
         }
-
-        // Launch the app under test.
-        Intent launch = getPackageManager().getLaunchIntentForPackage(Crawler.targetPackage);
-        if (launch == null) {
-            endCrawl("Could not launch " + Crawler.targetPackage + " — is it installed?");
-            return;
-        }
-        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        startActivity(launch);
-
-        Crawler.status("Crawling " + Crawler.targetPackage + "…");
-        engine.postDelayed(stepRunnable, FIRST_STEP_DELAY);
+        Crawler.notifyChanged();
+        if (overlay != null) overlay.detach();
+        if (engineThread != null) engineThread.quitSafely();
+        super.onDestroy();
     }
 
-    private void endCrawl(String why) {
-        Crawler.running = false;
-        if (engine != null) engine.removeCallbacks(stepRunnable);
-        Crawler.status(why + " Captured " + Crawler.shotCount
-                + " screens in " + Crawler.stepCount + " steps.");
+    // ---- Controls, called from the main screen and the overlay --------------
+
+    public void startCrawl() {
+        overlay.attach();
+        engine.post(() -> {
+            store = new ScreenshotStore(this, Crawler.targetLabel);
+            beginRun();
+        });
     }
 
-    /** One interaction step of the depth-first crawl. Never throws out of the loop. */
-    private void doStep() {
-        if (!Crawler.running) return;
-        if (Crawler.shotCount >= Crawler.maxShots) { endCrawl("Reached screenshot limit."); return; }
-        if (Crawler.stepCount >= Crawler.maxSteps) { endCrawl("Reached step limit."); return; }
-        Crawler.stepCount++;
-
-        long nextDelay = AFTER_ACTION_DELAY;
-        try {
-            AccessibilityNodeInfo root = getRootInActiveWindow();
-            if (root == null) { reschedule(AFTER_BACK_DELAY); return; }
-
-            String pkg = root.getPackageName() == null ? "" : root.getPackageName().toString();
-
-            // Decide whether this window is in scope for interaction.
-            boolean inScope = pkg.equals(Crawler.targetPackage)
-                    || pkg.equals(SYSTEM_UI)
-                    || pkg.contains("permission")
-                    || pkg.contains("packageinstaller");
-
-            if (!inScope) {
-                if (pkg.equals(launcherPkg) || pkg.isEmpty()) {
-                    endCrawl("Returned to home — exploration complete.");
-                    return;
-                }
-                // Wandered into another app; step back toward the target.
-                performGlobalAction(GLOBAL_ACTION_BACK);
-                reschedule(AFTER_BACK_DELAY);
-                return;
-            }
-
-            String stateHash = hashLayout(root);
-
-            // Screenshot the first time we see this screen.
-            if (!Crawler.visitedStates.contains(stateHash)) {
-                Crawler.visitedStates.add(stateHash);
-                captureScreen(pkg);
-            }
-
-            Set<String> tried = Crawler.triedElements.get(stateHash);
-            if (tried == null) {
-                tried = Collections.synchronizedSet(new java.util.HashSet<String>());
-                Crawler.triedElements.put(stateHash, tried);
-            }
-
-            List<Candidate> candidates = new ArrayList<Candidate>();
-            collect(root, candidates);
-            sortByPriority(candidates);
-
-            Candidate chosen = null;
-            for (Candidate c : candidates) {
-                if (!tried.contains(c.signature)) { chosen = c; break; }
-            }
-
-            if (chosen != null) {
-                tried.add(chosen.signature);
-                act(chosen);
-                nextDelay = AFTER_ACTION_DELAY;
-            } else if (tryScroll(root, stateHash)) {
-                // Revealed more content by scrolling; keep going on this screen.
-                nextDelay = AFTER_ACTION_DELAY;
-            } else {
-                // Dead end: retreat one screen (depth-first back-out).
-                performGlobalAction(GLOBAL_ACTION_BACK);
-                nextDelay = AFTER_BACK_DELAY;
-            }
-        } catch (Throwable t) {
-            Crawler.status("Step error: " + t.getClass().getSimpleName());
-        }
-        reschedule(nextDelay);
-    }
-
-    private void reschedule(long delay) {
-        if (Crawler.running && engine != null) engine.postDelayed(stepRunnable, delay);
-    }
-
-    // ---- Element collection & interaction -----------------------------------
-
-    private static final class Candidate {
-        AccessibilityNodeInfo node;
-        String signature;
-        int priority;
-        int top;
-        boolean editable;
-    }
-
-    private void collect(AccessibilityNodeInfo node, List<Candidate> out) {
-        if (node == null) return;
-        if (node.isVisibleToUser()) {
-            boolean editable = node.isEditable();
-            boolean actionable = node.isClickable() || node.isLongClickable()
-                    || node.isCheckable() || editable;
-            if (actionable) {
-                Rect r = new Rect();
-                node.getBoundsInScreen(r);
-                if (r.width() > 0 && r.height() > 0) {
-                    Candidate c = new Candidate();
-                    c.node = node;
-                    c.editable = editable;
-                    c.signature = signatureOf(node, r);
-                    c.priority = priorityOf(node);
-                    c.top = r.top;
-                    out.add(c);
-                }
-            }
-        }
-        for (int i = 0; i < node.getChildCount(); i++) {
-            collect(node.getChild(i), out);
-        }
-    }
-
-    /**
-     * Heuristic edge weighting: prefer elements that tend to open new screens
-     * (buttons, list items, tabs) over ones that only toggle state on the current
-     * screen (checkboxes, switches). Text fields sit in between so forms get filled.
-     */
-    private int priorityOf(AccessibilityNodeInfo node) {
-        String cls = node.getClassName() == null ? "" : node.getClassName().toString();
-        if (node.isCheckable() || cls.contains("CheckBox") || cls.contains("Switch")
-                || cls.contains("Toggle") || cls.contains("RadioButton")) {
-            return 0;
-        }
-        if (node.isEditable()) return 2;
-        boolean hasText = !TextUtils.isEmpty(node.getText());
-        if (cls.contains("Button") || cls.contains("TabView") || cls.contains("MenuItem")) return 4;
-        if (node.isClickable() && hasText) return 3;
-        if (node.isClickable()) return 2;
-        return 1;
-    }
-
-    private void sortByPriority(List<Candidate> list) {
-        Collections.sort(list, new Comparator<Candidate>() {
-            @Override public int compare(Candidate a, Candidate b) {
-                if (a.priority != b.priority) return b.priority - a.priority; // high first
-                return a.top - b.top;                                        // then top-to-bottom
+    public void togglePause() {
+        engine.post(() -> {
+            switch (Crawler.state) {
+                case RUNNING:
+                    engine.removeCallbacks(stepRunnable);
+                    Crawler.state = Crawler.State.PAUSED;
+                    Crawler.status(getString(R.string.status_paused));
+                    break;
+                case PAUSED:
+                    resumeRunning(getString(R.string.status_resuming));
+                    break;
+                case WAITING_AUTH:
+                    // The user chose not to sign in: back out and never touch this screen.
+                    if (authScreen != null) skippedAuth.add(authScreen);
+                    resumeRunning(getString(R.string.status_auth_skipped));
+                    break;
+                case WAITING_PERMISSION:
+                    performGlobalAction(GLOBAL_ACTION_BACK);
+                    break;
+                default:
+                    break;
             }
         });
     }
 
-    private void act(Candidate c) {
+    public void restartCrawl() {
+        engine.post(() -> {
+            if (!Crawler.isActive()) return;
+            engine.removeCallbacks(stepRunnable);
+            store.deleteRunShots();
+            beginRun();
+        });
+    }
+
+    public void stopCrawl() {
+        engine.post(() -> finish(getString(R.string.summary_stopped)));
+    }
+
+    private void beginRun() {
+        Crawler.resetCounters();
+        screens.clear();
+        screensByHash.clear();
+        savedImages.clear();
+        skippedAuth.clear();
+        rootScreen = null;
+        authScreen = null;
+        lastBackScreen = null;
+        scrolledScreen = null;
+        lastTap = null;
+        settleHash = null;
+        settleTries = 0;
+        steps = 0;
+        relaunches = 0;
+        backsOnScreen = 0;
+        foreignBacks = 0;
+        seenTarget = false;
+        Crawler.state = Crawler.State.RUNNING;
+        if (launchTarget()) {
+            Crawler.status(getString(R.string.status_exploring));
+            engine.postDelayed(stepRunnable, FIRST_STEP_DELAY);
+        } else {
+            finish(getString(R.string.summary_launch_failed));
+        }
+    }
+
+    private boolean launchTarget() {
+        Intent launch = getPackageManager().getLaunchIntentForPackage(Crawler.targetPackage);
+        if (launch == null) return false;
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(launch);
+        return true;
+    }
+
+    private void resumeRunning(String status) {
+        Crawler.state = Crawler.State.RUNNING;
+        settleHash = null;
+        Crawler.status(status);
+        reschedule(SETTLE_DELAY);
+    }
+
+    private void finish(String why) {
+        if (!Crawler.isActive()) return;
+        engine.removeCallbacks(stepRunnable);
+        Crawler.state = Crawler.State.IDLE;
+        Crawler.lastSummary = getString(R.string.summary_format, why, Crawler.shotCount,
+                Crawler.featureCount, Crawler.duplicatesSkipped, Crawler.permissionsGranted);
+        Crawler.status(why);
+        overlay.detach();
+        Intent back = new Intent(this, MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        startActivity(back);
+    }
+
+    // ---- The step loop ------------------------------------------------------
+
+    private void reschedule(long delay) {
+        if (Crawler.isActive()) engine.postDelayed(stepRunnable, delay);
+    }
+
+    private void doStep() {
+        Crawler.State state = Crawler.state;
+        if (state == Crawler.State.IDLE || state == Crawler.State.PAUSED) return;
+        try {
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            String pkg = root == null || root.getPackageName() == null
+                    ? "" : root.getPackageName().toString();
+            if (state == Crawler.State.RUNNING) {
+                stepRunning(root, pkg);
+            } else {
+                stepWaiting(state, root, pkg);
+            }
+        } catch (RuntimeException e) {
+            Crawler.status("Step error: " + e.getClass().getSimpleName());
+            reschedule(AFTER_TAP_DELAY);
+        }
+    }
+
+    private void stepRunning(AccessibilityNodeInfo root, String pkg) {
+        if (Crawler.shotCount >= Crawler.maxShots) { finish(getString(R.string.summary_limit)); return; }
+        if (++steps > MAX_STEPS) { finish(getString(R.string.summary_steps)); return; }
+        if (root == null) { reschedule(AFTER_BACK_DELAY); return; }
+
+        if (pkg.equals(getPackageName()) || pkg.equals(SYSTEM_UI) && !isBiometricPrompt(root)) {
+            reschedule(AFTER_BACK_DELAY);
+        } else if (isPermissionDialog(pkg)) {
+            enterPermissionWait();
+        } else if (isExternalAuth(pkg) || pkg.equals(SYSTEM_UI)) {
+            enterAuthWait(null);
+        } else if (pkg.equals(launcherPkg) || pkg.isEmpty()) {
+            onLeftToHome();
+        } else if (!pkg.equals(Crawler.targetPackage)) {
+            onForeignApp();
+        } else {
+            seenTarget = true;
+            foreignBacks = 0;
+            exploreTarget(root);
+        }
+    }
+
+    private void onLeftToHome() {
+        if (!seenTarget) { reschedule(AFTER_TAP_DELAY); return; }
+        relaunchOrFinish();
+    }
+
+    private void onForeignApp() {
+        if (++foreignBacks > MAX_FOREIGN_BACKS) { relaunchOrFinish(); return; }
+        performGlobalAction(GLOBAL_ACTION_BACK);
+        reschedule(AFTER_BACK_DELAY);
+    }
+
+    private void relaunchOrFinish() {
+        if (hasUnexplored() && relaunches < MAX_RELAUNCHES && launchTarget()) {
+            relaunches++;
+            foreignBacks = 0;
+            backsOnScreen = 0;
+            lastTap = null;
+            settleHash = null;
+            reschedule(FIRST_STEP_DELAY);
+        } else {
+            finish(getString(R.string.summary_complete));
+        }
+    }
+
+    private boolean hasUnexplored() {
+        for (Screen s : screens) if (!s.exhausted) return true;
+        return false;
+    }
+
+    private void exploreTarget(AccessibilityNodeInfo root) {
+        ScreenAnalyzer.Result a = ScreenAnalyzer.analyze(root, getResources().getDisplayMetrics().heightPixels);
+
+        // Don't judge or photograph a screen until its layout has stopped changing.
+        if (!a.hash.equals(settleHash) && settleTries < MAX_SETTLE_TRIES) {
+            settleHash = a.hash;
+            settleTries++;
+            reschedule(SETTLE_DELAY);
+            return;
+        }
+        if (a.loading && settleTries < MAX_LOADING_TRIES) {
+            settleTries++;
+            reschedule(SETTLE_DELAY);
+            return;
+        }
+        settleTries = 0;
+
+        Screen screen = findKnownScreen(a);
+        Tap arrivedBy = lastTap;
+        lastTap = null;
+        scrolledScreen = null;
+        boolean isNew = screen == null;
+        if (isNew) {
+            screen = addScreen(a, arrivedBy);
+        } else if (arrivedBy != null && arrivedBy.kind != null) {
+            arrivedBy.source.kindMisses.merge(arrivedBy.kind, 1, Integer::sum);
+        }
+
+        if (a.auth && !skippedAuth.contains(screen)) {
+            if (isNew) capture(screen, a);
+            enterAuthWait(screen);
+            return;
+        }
+        if (isNew) capture(screen, a);
+        if (a.auth) { retreat(screen); return; }
+
+        ScreenAnalyzer.Candidate next = screen.taps < MAX_TAPS_PER_SCREEN ? nextCandidate(screen, a) : null;
+        if (next != null) {
+            tap(screen, next);
+            settleHash = null;
+            backsOnScreen = 0;
+            reschedule(AFTER_TAP_DELAY);
+        } else if (screen.scrolls < MAX_SCROLLS_PER_SCREEN && a.scrollable != null
+                && a.scrollable.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) {
+            screen.scrolls++;
+            scrolledScreen = screen;
+            settleHash = null;
+            reschedule(AFTER_TAP_DELAY);
+        } else {
+            screen.exhausted = true;
+            if (hasUnexplored()) {
+                retreat(screen);
+            } else {
+                finish(getString(R.string.summary_complete));
+            }
+        }
+    }
+
+    private void retreat(Screen screen) {
+        backsOnScreen = screen == lastBackScreen ? backsOnScreen + 1 : 1;
+        lastBackScreen = screen;
+        if (backsOnScreen > MAX_BACKS_ON_SCREEN) {
+            screen.exhausted = true;
+            relaunchOrFinish();
+            return;
+        }
+        settleHash = null;
+        performGlobalAction(GLOBAL_ACTION_BACK);
+        reschedule(AFTER_BACK_DELAY);
+    }
+
+    // ---- Waiting on the user ------------------------------------------------
+
+    private void enterAuthWait(Screen screen) {
+        authScreen = screen;
+        clearPolls = 0;
+        Crawler.state = Crawler.State.WAITING_AUTH;
+        Crawler.status(getString(R.string.status_auth_wait));
+        reschedule(WAIT_POLL_DELAY);
+    }
+
+    private void enterPermissionWait() {
+        grantedBeforePrompt = grantedPermissionCount();
+        Crawler.state = Crawler.State.WAITING_PERMISSION;
+        Crawler.status(getString(R.string.status_permission_wait));
+        reschedule(WAIT_POLL_DELAY);
+    }
+
+    private void stepWaiting(Crawler.State state, AccessibilityNodeInfo root, String pkg) {
+        if (state == Crawler.State.WAITING_PERMISSION) {
+            if (root != null && !isPermissionDialog(pkg)) {
+                int gained = grantedPermissionCount() - grantedBeforePrompt;
+                if (gained > 0) Crawler.permissionsGranted += gained;
+                resumeRunning(getString(gained > 0
+                        ? R.string.status_permission_granted : R.string.status_permission_declined));
+                return;
+            }
+        } else if (root != null && pkg.equals(Crawler.targetPackage)) {
+            boolean stillAuth = ScreenAnalyzer.analyze(
+                    root, getResources().getDisplayMetrics().heightPixels).auth;
+            clearPolls = stillAuth ? 0 : clearPolls + 1;
+            if (clearPolls >= CLEAR_POLLS_TO_RESUME) {
+                resumeRunning(getString(R.string.status_auth_done));
+                return;
+            }
+        }
+        reschedule(WAIT_POLL_DELAY);
+    }
+
+    private static boolean isPermissionDialog(String pkg) {
+        return pkg.contains("permissioncontroller") || pkg.contains("packageinstaller");
+    }
+
+    private static boolean isExternalAuth(String pkg) {
+        return pkg.startsWith("com.google.android.gms") || pkg.contains("credentialmanager");
+    }
+
+    private static boolean isBiometricPrompt(AccessibilityNodeInfo root) {
+        return !root.findAccessibilityNodeInfosByViewId(SYSTEM_UI + ":id/biometric_icon").isEmpty()
+                || !root.findAccessibilityNodeInfosByViewId(SYSTEM_UI + ":id/biometric_scrollview").isEmpty();
+    }
+
+    private int grantedPermissionCount() {
+        try {
+            PackageInfo info = getPackageManager().getPackageInfo(
+                    Crawler.targetPackage, PackageManager.GET_PERMISSIONS);
+            if (info.requestedPermissionsFlags == null) return 0;
+            int granted = 0;
+            for (int flags : info.requestedPermissionsFlags) {
+                if ((flags & PackageInfo.REQUESTED_PERMISSION_GRANTED) != 0) granted++;
+            }
+            return granted;
+        } catch (PackageManager.NameNotFoundException e) {
+            return 0;
+        }
+    }
+
+    // ---- Screen identity and features ---------------------------------------
+
+    /** The same screen after a scroll, or a near match, is not a new screen. */
+    private Screen findKnownScreen(ScreenAnalyzer.Result a) {
+        Screen known = screensByHash.get(a.hash);
+        if (known != null) return known;
+        if (scrolledScreen != null) {
+            known = scrolledScreen;
+            known.tokens.addAll(a.tokens);
+        } else {
+            for (Screen s : screens) {
+                if (similarity(s.tokens, a.tokens) >= SAME_SCREEN_SIMILARITY) { known = s; break; }
+            }
+        }
+        if (known != null) screensByHash.put(a.hash, known);
+        return known;
+    }
+
+    private static float similarity(Set<String> a, Set<String> b) {
+        if (a.isEmpty() || b.isEmpty()) return 0f;
+        int shared = 0;
+        for (String t : b) if (a.contains(t)) shared++;
+        return shared / (float) (a.size() + b.size() - shared);
+    }
+
+    private Screen addScreen(ScreenAnalyzer.Result a, Tap arrivedBy) {
+        Screen s = new Screen();
+        s.tokens.addAll(a.tokens);
+        s.feature = featureFor(a, arrivedBy);
+        if (rootScreen == null && !a.auth) rootScreen = s;
+        screens.add(s);
+        screensByHash.put(a.hash, s);
+        return s;
+    }
+
+    private String featureFor(ScreenAnalyzer.Result a, Tap arrivedBy) {
+        if (a.auth) return FEATURE_SIGN_IN;
+        if (rootScreen == null) return FEATURE_HOME;
+        if (arrivedBy == null) return firstNonEmpty(a.title, currentActivity, FEATURE_HOME);
+        if (arrivedBy.source == rootScreen || arrivedBy.nav) {
+            return firstNonEmpty(arrivedBy.label, a.title, currentActivity);
+        }
+        return arrivedBy.source.feature;
+    }
+
+    private static String firstNonEmpty(String... options) {
+        for (String s : options) if (s != null && !s.isEmpty()) return s;
+        return "";
+    }
+
+    // ---- Tapping ------------------------------------------------------------
+
+    private ScreenAnalyzer.Candidate nextCandidate(Screen screen, ScreenAnalyzer.Result a) {
+        for (ScreenAnalyzer.Candidate c : a.candidates) {
+            if (screen.tried.contains(c.signature)) continue;
+            Integer misses = screen.kindMisses.get(c.kind);
+            if (misses != null && misses >= MAX_KIND_MISSES) continue;
+            return c;
+        }
+        return null;
+    }
+
+    private void tap(Screen screen, ScreenAnalyzer.Candidate c) {
+        screen.tried.add(c.signature);
+        screen.taps++;
+
+        Tap t = new Tap();
+        t.source = screen;
+        t.kind = c.kind;
+        t.label = c.label;
+        t.nav = c.nav;
+        lastTap = t;
+
         if (c.editable) {
             Bundle args = new Bundle();
-            args.putCharSequence(
-                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, Crawler.dummyText);
-            if (!c.node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) {
-                tapCenter(c.node);
-            }
-            return;
+            args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, DUMMY_TEXT);
+            if (c.node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) return;
         }
         AccessibilityNodeInfo clickable = c.node;
         while (clickable != null && !clickable.isClickable()) clickable = clickable.getParent();
-        if (clickable != null && clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return;
-        tapCenter(c.node);
+        if (clickable == null || !clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+            tapCenter(c.node);
+        }
     }
 
     private void tapCenter(AccessibilityNodeInfo node) {
@@ -279,141 +559,85 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         node.getBoundsInScreen(r);
         Path p = new Path();
         p.moveTo(r.centerX(), r.centerY());
-        GestureDescription g = new GestureDescription.Builder()
+        dispatchGesture(new GestureDescription.Builder()
                 .addStroke(new GestureDescription.StrokeDescription(p, 0, 50))
-                .build();
-        dispatchGesture(g, null, null);
+                .build(), null, null);
     }
 
-    private boolean tryScroll(AccessibilityNodeInfo root, String stateHash) {
-        int count = scrollCounts.containsKey(stateHash) ? scrollCounts.get(stateHash) : 0;
-        if (count >= MAX_SCROLLS_PER_SCREEN) return false;
-        AccessibilityNodeInfo scrollable = findScrollable(root);
-        if (scrollable == null) return false;
-        boolean ok = scrollable.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD);
-        if (ok) scrollCounts.put(stateHash, count + 1);
-        return ok;
-    }
+    // ---- Capture ------------------------------------------------------------
 
-    private AccessibilityNodeInfo findScrollable(AccessibilityNodeInfo node) {
-        if (node == null) return null;
-        if (node.isScrollable()) return node;
-        for (int i = 0; i < node.getChildCount(); i++) {
-            AccessibilityNodeInfo found = findScrollable(node.getChild(i));
-            if (found != null) return found;
+    private void capture(Screen screen, ScreenAnalyzer.Result a) {
+        if (store.shotsIn(screen.feature) >= MAX_SHOTS_PER_FEATURE) {
+            Crawler.duplicatesSkipped++;
+            return;
         }
-        return null;
-    }
+        ScreenCaptureService capture = ScreenCaptureService.instance;
+        if (capture == null) {
+            engine.removeCallbacks(stepRunnable);
+            Crawler.state = Crawler.State.PAUSED;
+            Crawler.status(getString(R.string.status_capture_lost));
+            return;
+        }
 
-    // ---- Screen identity & capture ------------------------------------------
+        long hiddenAt = overlay.hideForCapture();
+        Bitmap bitmap = capture.captureFrameAfter(hiddenAt);
+        overlay.showAfterCapture();
+        if (bitmap == null) return;
 
-    /** Structural hash of the layout: class, id, clickability and bounds, but not
-     *  volatile text — so a clock or changing label doesn't look like a new screen. */
-    private String hashLayout(AccessibilityNodeInfo root) {
-        StringBuilder sb = new StringBuilder();
-        appendStructure(root, sb);
         try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] d = md.digest(sb.toString().getBytes("UTF-8"));
-            StringBuilder hex = new StringBuilder();
-            for (int i = 0; i < 8; i++) hex.append(String.format("%02x", d[i]));
-            return hex.toString();
-        } catch (Exception e) {
-            return Integer.toHexString(sb.toString().hashCode());
-        }
-    }
-
-    private void appendStructure(AccessibilityNodeInfo node, StringBuilder sb) {
-        if (node == null) return;
-        Rect r = new Rect();
-        node.getBoundsInScreen(r);
-        sb.append(node.getClassName()).append(':')
-          .append(node.getViewIdResourceName()).append(':')
-          .append(node.isClickable() ? 1 : 0).append(':')
-          .append(r.left).append(',').append(r.top).append(',')
-          .append(r.right).append(',').append(r.bottom).append(';');
-        for (int i = 0; i < node.getChildCount(); i++) {
-            appendStructure(node.getChild(i), sb);
-        }
-    }
-
-    private void captureScreen(String pkg) {
-        ScreenCaptureService cap = ScreenCaptureService.instance;
-        if (cap == null) { Crawler.status("Capture service not ready."); return; }
-        Bitmap bmp = cap.captureBitmap();
-        if (bmp == null) { Crawler.status("No frame to capture."); return; }
-
-        int[] thumb = thumbnail(bmp);
-        if (lastThumb != null && diffRatio(thumb, lastThumb) < 0.05) {
-            bmp.recycle();
-            return; // near-identical to the previous screenshot: discard
-        }
-        lastThumb = thumb;
-
-        File dir = Crawler.outputDir;
-        if (dir == null) { bmp.recycle(); return; }
-        dir.mkdirs();
-        String safePkg = pkg.replaceAll("[^A-Za-z0-9._]", "_");
-        String name = String.format("%04d_%s.png", Crawler.shotCount + 1, safePkg);
-        File out = new File(dir, name);
-        try {
-            FileOutputStream fos = new FileOutputStream(out);
-            bmp.compress(Bitmap.CompressFormat.PNG, 100, fos);
-            fos.close();
-            Crawler.shotCount++;
-            appendLog(name, pkg);
-            Crawler.status("Captured " + Crawler.shotCount + ": " + name);
-        } catch (Exception e) {
-            Crawler.status("Save failed: " + e.getMessage());
+            long[] image = imageHash(bitmap);
+            if (image == null) {
+                Crawler.status(getString(R.string.status_protected));
+            } else if (isDuplicateImage(image)) {
+                Crawler.duplicatesSkipped++;
+                Crawler.notifyChanged();
+            } else if (store.save(bitmap, screen.feature, firstNonEmpty(a.title, currentActivity))) {
+                savedImages.add(image);
+                Crawler.shotCount++;
+                Crawler.featureCount = store.featureCount();
+                Crawler.status(getString(R.string.status_saved, screen.feature));
+            } else {
+                Crawler.status(getString(R.string.status_save_failed));
+            }
         } finally {
-            bmp.recycle();
+            bitmap.recycle();
         }
     }
 
-    private void appendLog(String file, String pkg) {
-        try {
-            File log = new File(Crawler.outputDir, "crawl_log.csv");
-            boolean fresh = !log.exists();
-            OutputStreamWriter w = new OutputStreamWriter(new FileOutputStream(log, true), "UTF-8");
-            if (fresh) w.write("index,file,package,step\n");
-            w.write(Crawler.shotCount + "," + file + "," + pkg + "," + Crawler.stepCount + "\n");
-            w.close();
-        } catch (Exception ignored) {}
+    private boolean isDuplicateImage(long[] image) {
+        for (long[] other : savedImages) {
+            int bits = 0;
+            for (int i = 0; i < image.length; i++) bits += Long.bitCount(image[i] ^ other[i]);
+            if (bits <= SAME_IMAGE_BITS) return true;
+        }
+        return false;
     }
 
-    private int[] thumbnail(Bitmap bmp) {
-        Bitmap small = Bitmap.createScaledBitmap(bmp, 64, 64, true);
-        int[] px = new int[64 * 64];
-        small.getPixels(px, 0, 64, 0, 0, 64, 64);
+    /** A 256-bit difference hash, or null for a blank frame such as a FLAG_SECURE window. */
+    private static long[] imageHash(Bitmap bitmap) {
+        final int w = 17, h = 16;
+        Bitmap small = Bitmap.createScaledBitmap(bitmap, w, h, true);
+        int[] pixels = new int[w * h];
+        small.getPixels(pixels, 0, w, 0, 0, w, h);
         small.recycle();
-        for (int i = 0; i < px.length; i++) {
-            int c = px[i];
-            int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
-            px[i] = (r * 30 + g * 59 + b * 11) / 100; // luminance 0..255
+
+        int min = 255, max = 0;
+        for (int i = 0; i < pixels.length; i++) {
+            int c = pixels[i];
+            int luma = (((c >> 16) & 0xFF) * 30 + ((c >> 8) & 0xFF) * 59 + (c & 0xFF) * 11) / 100;
+            pixels[i] = luma;
+            if (luma < min) min = luma;
+            if (luma > max) max = luma;
         }
-        return px;
-    }
+        if (max - min < BLANK_LUMA_RANGE) return null;
 
-    private double diffRatio(int[] a, int[] b) {
-        long sum = 0;
-        for (int i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]);
-        return (double) sum / (a.length * 255.0);
-    }
-
-    @Override public void onAccessibilityEvent(AccessibilityEvent event) { /* engine-driven */ }
-
-    @Override public void onInterrupt() { }
-
-    @Override
-    public void onDestroy() {
-        endCrawl("Service destroyed.");
-        if (engineThread != null) engineThread.quitSafely();
-        if (instance == this) instance = null;
-        super.onDestroy();
-    }
-
-    private String signatureOf(AccessibilityNodeInfo node, Rect r) {
-        return node.getClassName() + "|" + node.getViewIdResourceName() + "|"
-                + node.getText() + "|" + r.left + "," + r.top + "," + r.right + "," + r.bottom;
+        long[] hash = new long[4];
+        int bit = 0;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w - 1; x++, bit++) {
+                if (pixels[y * w + x] > pixels[y * w + x + 1]) hash[bit / 64] |= 1L << (bit % 64);
+            }
+        }
+        return hash;
     }
 }

@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.TapTrak" parent="@android:style/Theme.DeviceDefault.NoActionBar" />
+    <style name="Theme.TapTrak" parent="Theme.TapTrak.Base">
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
 </resources>

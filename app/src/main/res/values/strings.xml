@@ -1,6 +1,70 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">TapTrak</string>
+    <string name="app_tagline">Feature screenshots, organised automatically.</string>
     <string name="accessibility_label">TapTrak engine</string>
-    <string name="accessibility_description">Drives the app under test: reads the on-screen layout, taps interactive elements in a depth-first order, and signals the capture service to screenshot each new screen. For automated UI testing of apps you own or are authorised to test.</string>
+    <string name="accessibility_description">Explores the app you choose: reads its on-screen layout, taps through its screens, and signals the capture service to screenshot each new one. For testing apps you own or are authorised to test.</string>
+
+    <string name="section_setup">Setup</string>
+    <string name="section_target">App to capture</string>
+    <string name="section_limit">Screenshot limit</string>
+    <string name="section_result">Last run</string>
+
+    <string name="setup_done">Accepted</string>
+    <string name="setup_accessibility">Accessibility service</string>
+    <string name="setup_accessibility_hint">Tap, then turn on TapTrak engine. If it\'s greyed out: App info, ⋮ menu, Allow restricted settings.</string>
+    <string name="setup_capture">Screen capture</string>
+    <string name="setup_capture_hint">Tap and choose \"Entire screen\".</string>
+    <string name="setup_notifications">Notifications</string>
+    <string name="setup_notifications_hint">Optional. Shows the capture notification.</string>
+    <string name="setup_storage">Storage</string>
+    <string name="setup_storage_hint">Needed to save to Pictures on this Android version.</string>
+
+    <string name="target_none">Choose an app</string>
+    <string name="target_none_hint">Pick from the apps on this phone</string>
+    <string name="picker_title">Choose an app</string>
+    <string name="picker_search">Search apps</string>
+    <string name="picker_empty">No matching apps</string>
+    <string name="action_back">Back</string>
+
+    <string name="action_start">Start capture</string>
+    <string name="action_stop">Stop capture</string>
+    <string name="hint_finish_setup">Accept the setup items above to continue.</string>
+    <string name="hint_choose_app">Choose the app you want to capture.</string>
+    <string name="hint_saves_to">Saves to %1$s</string>
+
+    <string name="result_open">View latest screenshot</string>
+    <string name="summary_format">%1$s\n%2$d screenshots in %3$d features · %4$d duplicates skipped · %5$d permissions granted</string>
+    <string name="summary_complete">Exploration complete.</string>
+    <string name="summary_stopped">Stopped.</string>
+    <string name="summary_limit">Reached the screenshot limit.</string>
+    <string name="summary_steps">Reached the step limit.</string>
+    <string name="summary_launch_failed">Could not open the app.</string>
+
+    <string name="status_exploring">Exploring…</string>
+    <string name="status_paused">Paused. You can use the app freely.</string>
+    <string name="status_resuming">Resuming…</string>
+    <string name="status_auth_wait">Sign in, and capture continues by itself. ⏭ skips this screen.</string>
+    <string name="status_auth_done">✓ Signed in. Resuming…</string>
+    <string name="status_auth_skipped">Sign-in skipped.</string>
+    <string name="status_permission_wait">Answer the permission request. ⏭ dismisses it.</string>
+    <string name="status_permission_granted">✓ Permission granted.</string>
+    <string name="status_permission_declined">Permission not granted. Continuing…</string>
+    <string name="status_capture_lost">Screen capture ended. Stop, then grant it again.</string>
+    <string name="status_protected">Protected screen skipped.</string>
+    <string name="status_saved">Saved to %1$s</string>
+    <string name="status_save_failed">Could not save the screenshot.</string>
+
+    <string name="overlay_counts">%1$d shots · %2$d features</string>
+    <string name="overlay_pause">Pause</string>
+    <string name="overlay_resume">Resume</string>
+    <string name="overlay_skip">Skip</string>
+    <string name="overlay_restart">Restart</string>
+    <string name="overlay_stop">Stop</string>
+
+    <string name="notification_channel">Screen capture</string>
+    <string name="notification_title">TapTrak can capture the screen</string>
+    <string name="notification_text">Screenshots are only taken during a run.</string>
+    <string name="capture_denied">Screen capture was not allowed.</string>
+    <string name="no_viewer">No app can open this image.</string>
 </resources>
