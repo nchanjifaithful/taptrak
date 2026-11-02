@@ -3,6 +3,20 @@
 Each release's notes are built from the newest section below, followed by the
 commits in that build. Add a section here when a change is worth describing.
 
+## 2.5
+
+Broader coverage, far fewer wasted taps.
+
+- **Lists: one row stands in for the whole list.** The crawl taps a single
+  representative item, records the detail screen, and moves on instead of
+  drilling into every row.
+- **Scrolling is capped at two full scrolls per screen,** then the crawl leaves
+  the screen — enough to reveal more content without grinding on long lists.
+- **Every newly-seen screen is captured.** Capture is now gated on whether the
+  screen's layout is one the crawl hasn't recorded, with the perceptual
+  image-hash dedup as the final guard against duplicates. This surfaces the
+  major sections and dialogs the previous structural gate could skip.
+
 ## 2.4
 
 Captures what an interaction reveals, not the interaction itself.

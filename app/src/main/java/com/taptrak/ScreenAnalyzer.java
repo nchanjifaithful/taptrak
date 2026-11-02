@@ -65,6 +65,7 @@ final class ScreenAnalyzer {
         boolean nav;
         boolean bottomBar;
         boolean selected;
+        boolean listItem;
     }
 
     static final class Result {
@@ -208,6 +209,7 @@ final class ScreenAnalyzer {
         c.nav = nav;
         c.bottomBar = nav && r.top > screenHeight * BOTTOM_BAR_FROM;
         c.selected = nav && (node.isSelected() || node.isChecked());
+        c.listItem = inList && !nav;
         c.top = r.top;
         // Every labelled row is its own element; unlabelled ones are told apart by position.
         c.signature = cls + "|" + id + "|" + label

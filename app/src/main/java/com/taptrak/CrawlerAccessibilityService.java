@@ -53,7 +53,8 @@ public class CrawlerAccessibilityService extends AccessibilityService {
     private static final long MAX_QUIET_WAIT_MS = 600;
 
     private static final int MAX_STEPS = 1000000;
-    private static final int MAX_SCROLLS_PER_SCREEN = 50;
+    /** At most two full scrolls per screen, then move on. */
+    private static final int MAX_SCROLLS_PER_SCREEN = 2;
     private static final int MAX_TAPS_PER_SCREEN = 500;
     /** Interactions in a row without a new screenshot before the app counts as finished. */
     private static final int MAX_FRUITLESS_INTERACTIONS = 500;
@@ -101,6 +102,8 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         int gridTaps;
         int routeTries;
         boolean exhausted;
+        /** A list on this screen has had its one representative row tapped. */
+        boolean listTapped;
     }
 
     private static final class Tap {
@@ -403,6 +406,7 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         // Depth first: this screen's content, then more of it by scrolling, then tabs.
         ScreenAnalyzer.Candidate next = nextElement(screen, a, false);
         if (next != null) {
+            if (next.listItem) markListTried(screen, a);
             act(screen, next);
         } else if (scrollOn(screen, a)) {
             scrolledScreen = screen;
@@ -411,6 +415,7 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         } else if (a.candidates.size() < SPARSE_ELEMENTS && screen.gridTaps < GRID_COLUMNS * GRID_ROWS) {
             tapGridPoint(screen);
         } else if ((next = nextElement(screen, a, true)) != null) {
+            if (next.listItem) markListTried(screen, a);
             act(screen, next);
         } else {
             screen.exhausted = true;
@@ -647,9 +652,20 @@ public class CrawlerAccessibilityService extends AccessibilityService {
     private ScreenAnalyzer.Candidate nextElement(Screen screen, ScreenAnalyzer.Result a, boolean bottomBar) {
         if (screen.taps >= MAX_TAPS_PER_SCREEN) return null;
         for (ScreenAnalyzer.Candidate c : a.candidates) {
-            if (c.bottomBar == bottomBar && !screen.tried.contains(c.signature)) return c;
+            if (c.bottomBar != bottomBar || screen.tried.contains(c.signature)) continue;
+            // One row stands in for the whole list: once tapped, skip the rest.
+            if (c.listItem && screen.listTapped) continue;
+            return c;
         }
         return null;
+    }
+
+    /** Tapping one row represents the list, so mark every current row done. */
+    private void markListTried(Screen screen, ScreenAnalyzer.Result a) {
+        screen.listTapped = true;
+        for (ScreenAnalyzer.Candidate c : a.candidates) {
+            if (c.listItem) screen.tried.add(c.signature);
+        }
     }
 
     private void tap(Screen screen, ScreenAnalyzer.Candidate c, boolean exploring) {
@@ -711,36 +727,19 @@ public class CrawlerAccessibilityService extends AccessibilityService {
     // ---- Capture ------------------------------------------------------------
 
     /**
-     * A new page is always captured. On the same page, filling a field or selecting an
-     * option only counts if it makes new UI appear, and scrolling if it shows new content.
+     * Every newly-seen screen (a layout the crawl hasn't recorded before) is captured, and
+     * every scroll that reveals enough new content. Returning to a known screen by Back, or a
+     * tap that changes nothing, is not. The perceptual image hash in {@link #capture} is the
+     * final guard that drops anything that still looks the same as a shot already saved, so
+     * this errs toward capturing — the goal is the most useful shots without duplicates.
      */
     private void captureIfSignificant(Screen screen, ScreenAnalyzer.Result a, Screen from,
                                       boolean scrolled, boolean isNew) {
-        if (from == null || a.auth) {
-            if (isNew) capture(screen, a, null); // Arriving by Back shows nothing new.
-        } else if (scrolled) {
+        if (scrolled) {
             capture(screen, a, screen.lastImage);
-        } else if (isDifferentPage(from, a) || showsNewUi(from, a)) {
+        } else if (isNew) {
             capture(screen, a, null);
         }
-    }
-
-    private static boolean isDifferentPage(Screen from, ScreenAnalyzer.Result a) {
-        return !from.selected.equals(a.selected)
-                || !from.activity.equals(a.activity)
-                || similarity(from.structure, a.structure) < SAME_FOLDER_STRUCTURE;
-    }
-
-    /** A new kind of element, or several new pieces of text. One changed label isn't enough. */
-    private static boolean showsNewUi(Screen from, ScreenAnalyzer.Result a) {
-        for (String token : a.structure) {
-            if (!from.structure.contains(token)) return true;
-        }
-        int newLabels = 0;
-        for (String label : a.labels) {
-            if (!from.labels.contains(label)) newLabels++;
-        }
-        return newLabels >= MIN_NEW_LABELS;
     }
 
     private void capture(Screen screen, ScreenAnalyzer.Result a, long[] mustDifferFrom) {
