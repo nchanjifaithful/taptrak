@@ -1,0 +1,53 @@
+name: Build APK
+
+# Builds the APK on GitHub's servers (no local SDK needed) and publishes it
+# to this repo's Releases. Runs on every push to main, or on demand from the
+# Actions tab ("Run workflow").
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create a Release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Build debug APK
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Name the APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk TapTrak.apk
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: taptrak-debug
+          path: TapTrak.apk
+
+      - name: Publish APK to Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: TapTrak v1.0.${{ github.run_number }}
+          files: TapTrak.apk
+          body: |
+            TapTrak debug-signed APK, built automatically by GitHub Actions.
+            Download **TapTrak.apk** below and install it on your device
+            (you may need to allow installs from your file manager).

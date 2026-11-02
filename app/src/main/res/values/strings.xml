@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TapTrak</string>
+    <string name="accessibility_label">TapTrak engine</string>
+    <string name="accessibility_description">Drives the app under test: reads the on-screen layout, taps interactive elements in a depth-first order, and signals the capture service to screenshot each new screen. For automated UI testing of apps you own or are authorised to test.</string>
+</resources>

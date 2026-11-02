@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Framework theme only: no AndroidX / Material dependency, so the APK stays tiny.
+         Light here; values-night/ supplies the dark variant. -->
+    <style name="Theme.TapTrak" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+</resources>
