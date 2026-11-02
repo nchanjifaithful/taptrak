@@ -10,11 +10,26 @@ android {
         applicationId = "com.taptrak"
         minSdk = 24
         targetSdk = 34
-        versionCode = 3
-        versionName = "2.1"
+        // Android needs this to rise with each update. Cloud builds number themselves.
+        versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toInt() ?: 1
+        versionName = "2.2"
+    }
+
+    // Cloud builds sign with one permanent key, because Android only installs an
+    // update over the app if the signature matches. Local builds use the debug key.
+    val keystorePath = System.getenv("TAPTRAK_KEYSTORE")
+    val permanentKey = if (keystorePath == null) null else signingConfigs.create("permanent") {
+        storeFile = file(keystorePath)
+        storeType = "pkcs12"
+        storePassword = System.getenv("TAPTRAK_KEYSTORE_PASSWORD")
+        keyAlias = "taptrak"
+        keyPassword = System.getenv("TAPTRAK_KEYSTORE_PASSWORD")
     }
 
     buildTypes {
+        debug {
+            if (permanentKey != null) signingConfig = permanentKey
+        }
         release {
             isMinifyEnabled = false
             // Debug key by default so `assembleRelease` produces an installable APK.

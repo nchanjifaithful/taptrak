@@ -108,6 +108,8 @@ variables in `build-standalone.sh` at them, and run it. Produces `TapTrak.apk`.
 > someone else's app or account without authorisation may be unlawful.
 
 ## Signing
-Debug-signed by default, which is fine for your own devices but not the Play Store.
-Swap in your own release key (see the `signingConfig` in `app/build.gradle.kts`, or
-the `KEYSTORE` variables in `build-standalone.sh`) before distributing.
+Cloud builds are signed with one permanent key, held in the repo's
+`TAPTRAK_KEYSTORE_BASE64` and `TAPTRAK_KEYSTORE_PASSWORD` secrets, so each release
+installs as an update over the last. If that key is lost or replaced, the app has to
+be uninstalled before the next install. Builds fail rather than use another key if
+the secrets are missing. Local builds use the debug key.

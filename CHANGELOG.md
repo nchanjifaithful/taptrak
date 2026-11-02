@@ -3,6 +3,14 @@
 Each release's notes are built from the newest section below, followed by the
 commits in that build. Add a section here when a change is worth describing.
 
+## 2.2
+
+- **Updates now install over the existing app.** Every build used to be signed with a
+  new temporary key, which caused the "package conflicts" error. Builds now share one
+  permanent key.
+- **One last uninstall needed.** Remove the old version once before installing this
+  one. Later updates install directly.
+
 ## 2.1
 
 Scans the whole app, for app inventories.

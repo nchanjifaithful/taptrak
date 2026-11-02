@@ -32,13 +32,29 @@ jobs:
           # The action's default list includes 'tools', which sdkmanager no longer offers.
           packages: platform-tools platforms;android-34 build-tools;34.0.0
 
-      - name: Build debug APK
+      - name: Load the permanent signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.TAPTRAK_KEYSTORE_BASE64 }}
+        run: |
+          # Fail instead of signing with a throwaway key, which would break updates.
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::The TAPTRAK_KEYSTORE_BASE64 secret is missing."
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/taptrak.p12"
+          echo "TAPTRAK_KEYSTORE=$RUNNER_TEMP/taptrak.p12" >> "$GITHUB_ENV"
+
+      - name: Build APK
+        env:
+          TAPTRAK_KEYSTORE_PASSWORD: ${{ secrets.TAPTRAK_KEYSTORE_PASSWORD }}
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
 
-      - name: Name the APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk TapTrak.apk
+      - name: Name the APK and show its signature
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk TapTrak.apk
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs TapTrak.apk | grep 'SHA-256'
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -64,14 +80,14 @@ jobs:
             fi
             echo
             echo "---"
-            echo "Debug-signed APK, built automatically by GitHub Actions. Download **TapTrak.apk** below and install it on your device (you may need to allow installs from your file manager)."
+            echo "Built automatically by GitHub Actions. Download **TapTrak.apk** below and install it on your device (you may need to allow installs from your file manager)."
           } > release-notes.md
           cat release-notes.md
 
       - name: Publish APK to Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.1.${{ github.run_number }}
-          name: TapTrak v2.1.${{ github.run_number }}
+          tag_name: v2.2.${{ github.run_number }}
+          name: TapTrak v2.2.${{ github.run_number }}
           files: TapTrak.apk
           body_path: release-notes.md
