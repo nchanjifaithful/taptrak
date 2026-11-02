@@ -26,6 +26,9 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The action's default list includes 'tools', which sdkmanager no longer offers.
+          packages: platform-tools platforms;android-34 build-tools;34.0.0
 
       - name: Build debug APK
         run: |
