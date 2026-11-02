@@ -3,6 +3,18 @@
 Each release's notes are built from the newest section below, followed by the
 commits in that build. Add a section here when a change is worth describing.
 
+## 2.4
+
+Captures what an interaction reveals, not the interaction itself.
+
+- **Form input and selections no longer create screenshots** on their own.
+- **If a selection or entry makes new UI appear, it's captured,** such as an extra
+  field, a dropdown, an expanded section or search results.
+- **New pages, dialogs and tabs are always captured,** unless the image matches one
+  already saved.
+- **Scrolling is captured** when it shows a good amount of new content.
+- Every element is still tried, so the walk reaches just as much of the app.
+
 ## 2.3
 
 Captures every interaction, much faster.

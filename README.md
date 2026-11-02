@@ -1,7 +1,7 @@
 # TapTrak
 
 A lightweight Android tool that walks through an app by itself and **screenshots
-every interaction**, skipping only duplicate images. It's meant for QA, regression
+every new page and any new UI an interaction reveals**. It's meant for QA, regression
 and accessibility testing of **apps you own or are authorised to test**.
 
 - No third-party libraries, only the Android framework, so the APK stays tiny.
@@ -24,8 +24,8 @@ top-level folder per bottom tab, and a subfolder for each screen opened from the
 | Behaviour | How it works |
 |---|---|
 | **Order** | Depth-first. On each screen it tries every element, scrolls for more, moves to the next tab, then presses Back. |
-| **Screenshots** | One after every tap, text entry, toggle and scroll, and on first reaching any screen. |
-| **Duplicates** | A screenshot is dropped only when its image matches one already saved. |
+| **Screenshots** | Every new page, dialog or tab, anything that makes new UI appear (an extra field, a dropdown, search results), and scrolls that show a good amount of new content. |
+| **Skipped** | Filling a field or selecting an option when nothing new appears, and any image matching one already saved. |
 | **Speed** | It moves on as soon as the screen stops changing, and saves in the background. |
 | **Screens with little to tap** | Games and web content are also tapped on a grid of points. |
 | **Whole app** | If Back leaves the app, it reopens the app and returns to what's unfinished. The run ends when nothing is left, the limit is reached, or 500 interactions in a row produce no new image. |

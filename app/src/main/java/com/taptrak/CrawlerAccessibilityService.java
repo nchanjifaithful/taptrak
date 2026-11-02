@@ -25,10 +25,9 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * The capture engine: a depth-first walk of the target app that screenshots the
- * result of every interaction. The saved images themselves decide what's a
- * duplicate, so a screenshot is only dropped when it looks the same as one already
- * saved.
+ * The capture engine: a depth-first walk of the target app that tries every
+ * interaction, and screenshots new pages and any new UI that an interaction reveals.
+ * Filling a field or selecting an option isn't captured unless something new appears.
  *
  * <p>On each screen it tries every element, then scrolls for more, then moves on
  * to tabs, and finally presses Back. If Back leaves the app, it reopens the app and
@@ -79,17 +78,24 @@ public class CrawlerAccessibilityService extends AccessibilityService {
     private static final int HASH_HEIGHT = 32;
     /** Differing bits out of 1024 below which two images are the same picture. */
     private static final int SAME_IMAGE_BITS = 6;
+    /** A scroll smaller than this hasn't shown enough new content to capture. */
+    private static final int MIN_SCROLL_CHANGE_BITS = 80;
+    private static final int MIN_NEW_LABELS = 2;
     private static final float STATUS_BAR_FRACTION = 0.05f;
     private static final int BLANK_LUMA_RANGE = 6;
 
     private static final class Screen {
         final Set<String> structure = new HashSet<>();
+        final Set<String> labels = new HashSet<>();
         final Set<String> selected = new HashSet<>();
         final Set<String> tried = new HashSet<>();
         /** Where each tap from this screen has led. */
         final Map<String, Screen> edges = new HashMap<>();
+        String activity;
         String folder;
         String tabParentFolder;
+        /** The last image saved of this screen, which scrolling is measured against. */
+        long[] lastImage;
         int taps;
         int scrolls;
         int gridTaps;
@@ -369,7 +375,8 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         loadingPolls = 0;
 
         Tap arrivedBy = lastTap;
-        boolean interacted = arrivedBy != null || scrolledScreen != null;
+        Screen from = arrivedBy != null ? arrivedBy.source : scrolledScreen;
+        boolean scrolled = arrivedBy == null && scrolledScreen != null;
         lastTap = null;
         Screen screen = findKnownScreen(a);
         scrolledScreen = null;
@@ -382,8 +389,7 @@ public class CrawlerAccessibilityService extends AccessibilityService {
             if (c.selected) screen.tried.add(c.signature);
         }
 
-        // Every interaction gets a screenshot. Only arriving back by Back doesn't.
-        if (isNew || interacted && !a.auth) capture(screen, a);
+        captureIfSignificant(screen, a, from, scrolled, isNew);
         if (a.auth && !skippedAuth.contains(screen)) {
             enterAuthWait(screen);
             return;
@@ -589,7 +595,9 @@ public class CrawlerAccessibilityService extends AccessibilityService {
     private Screen addScreen(ScreenAnalyzer.Result a, Tap arrivedBy) {
         Screen s = new Screen();
         s.structure.addAll(a.structure);
+        s.labels.addAll(a.labels);
         s.selected.addAll(a.selected);
+        s.activity = a.activity;
         assignFolder(s, a, arrivedBy);
         if (rootScreen == null && !a.auth) rootScreen = s;
         screens.add(s);
@@ -702,7 +710,40 @@ public class CrawlerAccessibilityService extends AccessibilityService {
 
     // ---- Capture ------------------------------------------------------------
 
-    private void capture(Screen screen, ScreenAnalyzer.Result a) {
+    /**
+     * A new page is always captured. On the same page, filling a field or selecting an
+     * option only counts if it makes new UI appear, and scrolling if it shows new content.
+     */
+    private void captureIfSignificant(Screen screen, ScreenAnalyzer.Result a, Screen from,
+                                      boolean scrolled, boolean isNew) {
+        if (from == null || a.auth) {
+            if (isNew) capture(screen, a, null); // Arriving by Back shows nothing new.
+        } else if (scrolled) {
+            capture(screen, a, screen.lastImage);
+        } else if (isDifferentPage(from, a) || showsNewUi(from, a)) {
+            capture(screen, a, null);
+        }
+    }
+
+    private static boolean isDifferentPage(Screen from, ScreenAnalyzer.Result a) {
+        return !from.selected.equals(a.selected)
+                || !from.activity.equals(a.activity)
+                || similarity(from.structure, a.structure) < SAME_FOLDER_STRUCTURE;
+    }
+
+    /** A new kind of element, or several new pieces of text. One changed label isn't enough. */
+    private static boolean showsNewUi(Screen from, ScreenAnalyzer.Result a) {
+        for (String token : a.structure) {
+            if (!from.structure.contains(token)) return true;
+        }
+        int newLabels = 0;
+        for (String label : a.labels) {
+            if (!from.labels.contains(label)) newLabels++;
+        }
+        return newLabels >= MIN_NEW_LABELS;
+    }
+
+    private void capture(Screen screen, ScreenAnalyzer.Result a, long[] mustDifferFrom) {
         ScreenCaptureService capture = ScreenCaptureService.instance;
         if (capture == null) {
             engine.removeCallbacks(stepRunnable);
@@ -717,12 +758,14 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         if (bitmap == null) return;
 
         long[] image = imageHash(bitmap);
-        if (image == null || isDuplicateImage(image)) {
+        if (image == null || isDuplicateImage(image)
+                || mustDifferFrom != null && differingBits(image, mustDifferFrom) < MIN_SCROLL_CHANGE_BITS) {
             if (image != null) Crawler.duplicatesSkipped++;
             bitmap.recycle();
             Crawler.notifyChanged();
             return;
         }
+        screen.lastImage = image;
         // The store saves in the background and recycles the bitmap when it's done.
         store.save(bitmap, screen.folder, firstNonEmpty(a.title, a.activity, FOLDER_DEFAULT));
         savedImages.add(image);
@@ -734,11 +777,15 @@ public class CrawlerAccessibilityService extends AccessibilityService {
 
     private boolean isDuplicateImage(long[] image) {
         for (long[] other : savedImages) {
-            int bits = 0;
-            for (int i = 0; i < image.length; i++) bits += Long.bitCount(image[i] ^ other[i]);
-            if (bits <= SAME_IMAGE_BITS) return true;
+            if (differingBits(image, other) <= SAME_IMAGE_BITS) return true;
         }
         return false;
+    }
+
+    private static int differingBits(long[] a, long[] b) {
+        int bits = 0;
+        for (int i = 0; i < a.length; i++) bits += Long.bitCount(a[i] ^ b[i]);
+        return bits;
     }
 
     /**
