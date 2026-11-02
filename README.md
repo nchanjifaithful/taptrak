@@ -19,13 +19,17 @@ Pictures/TapTrak/<App name>/<Folder>/<Subfolder>/001_<Screen title>.jpg
 Folders follow the path taken through the app: `Home` for the first screen, one
 top-level folder per bottom tab, and a subfolder for each screen opened from there.
 
+Text files use the same folder names and go in the app's own storage, at
+`Android/data/com.taptrak/files/TapTrak/<App name>/`. Uninstalling TapTrak deletes them.
+
 ## How it scans an app
 
 | Behaviour | How it works |
 |---|---|
 | **Order** | Depth-first. On each screen it tries every element, scrolls up to twice for more, moves to the next tab, then presses Back. |
-| **Screenshots** | Every screen state it hasn't recorded yet, and scrolls that show a good amount of new content. |
-| **Skipped** | Returning to a known screen, a tap that changes nothing, and any image matching one already saved. |
+| **Screenshots** | Any step where the screen differs from the last screenshot saved, including returning to a screen already captured. |
+| **Skipped** | A frame effectively identical to the last one saved, and blank or protected windows. |
+| **Screen text** | Each screenshot gets a matching `.txt` of the text on that screen. |
 | **Speed** | It moves on as soon as the screen stops changing, and saves in the background. |
 | **Screens with little to tap** | Games and web content are also tapped on a grid of points. |
 | **Whole app** | If Back leaves the app, it reopens the app and returns to what's unfinished. The run ends when nothing is left, the limit is reached, or 8000 interactions in a row produce no new image. |
@@ -46,7 +50,8 @@ Every release lists what changed, from the newest section of
   continues by itself, or tap ⏭ to skip that screen.
 - **Permission requests from the app:** the crawl waits for your answer, then shows
   whether it was granted. ⏭ dismisses the request.
-- **Passwords** are never filled in or read.
+- **Passwords** are never filled in. Text files record whatever a screen shows, which
+  can include what's displayed in a sign-in field.
 
 These are detected from what's on the screen, so an unusual sign-in screen may not
 be recognised. Use Pause if the crawler carries on past one.
@@ -60,7 +65,7 @@ move it, and tap it to collapse or expand.
 |---|---|
 | ⏸ / ▶ | Pause or resume. While paused you can use the app freely. |
 | ⏭ | Appears while waiting on you: skip the sign-in screen or dismiss the permission request. |
-| ↻ | Restart. Deletes this run's screenshots (earlier runs are kept) and starts over. |
+| ↻ | Restart. Deletes this run's screenshots (earlier runs are kept, and text files aren't deleted) and starts over. |
 | ⏹ | Stop and return to TapTrak. |
 
 ## Deliberate limitation: no `FLAG_SECURE` bypass

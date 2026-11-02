@@ -12,6 +12,7 @@ import android.graphics.Rect;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.text.TextUtils;
 import android.util.DisplayMetrics;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
@@ -68,7 +69,6 @@ public class CrawlerAccessibilityService extends AccessibilityService {
     private static final int MAX_FOREIGN_BACKS = 6;
     private static final int MAX_LOADING_POLLS = 10;
     private static final int CLEAR_POLLS_TO_RESUME = 2;
-    private static final int MAX_FOLDER_DEPTH = 6;
 
     /** Screens exposing fewer elements than this also get tapped on a grid of points. */
     private static final int SPARSE_ELEMENTS = 3;
@@ -81,11 +81,8 @@ public class CrawlerAccessibilityService extends AccessibilityService {
 
     private static final int HASH_WIDTH = 33;
     private static final int HASH_HEIGHT = 32;
-    /** Differing bits out of 1024 below which two images are the same picture. */
+    /** Differing bits out of 1024 at or below which a frame counts as unchanged from the last. */
     private static final int SAME_IMAGE_BITS = 6;
-    /** A scroll smaller than this hasn't shown enough new content to capture. */
-    private static final int MIN_SCROLL_CHANGE_BITS = 80;
-    private static final int MIN_NEW_LABELS = 2;
     private static final float STATUS_BAR_FRACTION = 0.05f;
     private static final int BLANK_LUMA_RANGE = 6;
 
@@ -124,7 +121,8 @@ public class CrawlerAccessibilityService extends AccessibilityService {
 
     private final Map<String, Screen> screensByHash = new HashMap<>();
     private final List<Screen> screens = new ArrayList<>();
-    private final List<long[]> savedImages = new ArrayList<>();
+    /** The last frame actually saved, so a frame that changed nothing isn't saved twice in a row. */
+    private long[] lastCapturedImage;
     private final Set<Screen> skippedAuth = new HashSet<>();
 
     private String launcherPkg = "";
@@ -243,7 +241,7 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         Crawler.resetCounters();
         screens.clear();
         screensByHash.clear();
-        savedImages.clear();
+        lastCapturedImage = null;
         skippedAuth.clear();
         currentActivity = "";
         rootScreen = null;
@@ -380,8 +378,6 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         loadingPolls = 0;
 
         Tap arrivedBy = lastTap;
-        Screen from = arrivedBy != null ? arrivedBy.source : scrolledScreen;
-        boolean scrolled = arrivedBy == null && scrolledScreen != null;
         lastTap = null;
         Screen screen = findKnownScreen(a);
         scrolledScreen = null;
@@ -394,7 +390,8 @@ public class CrawlerAccessibilityService extends AccessibilityService {
             if (c.selected) screen.tried.add(c.signature);
         }
 
-        captureIfSignificant(screen, a, from, scrolled, isNew);
+        // Capture widely: any step whose frame differs at all from the last one saved.
+        capture(screen, a);
         if (a.auth && !skippedAuth.contains(screen)) {
             enterAuthWait(screen);
             return;
@@ -637,9 +634,8 @@ public class CrawlerAccessibilityService extends AccessibilityService {
     }
 
     private static String nest(String parent, String name) {
-        int depth = parent.split(ScreenshotStore.SEPARATOR).length;
-        return depth >= MAX_FOLDER_DEPTH ? parent : parent + ScreenshotStore.SEPARATOR
-                + name.replace(ScreenshotStore.SEPARATOR, " ");
+        // No depth limit: folders mirror the full path taken into the app.
+        return parent + ScreenshotStore.SEPARATOR + name.replace(ScreenshotStore.SEPARATOR, " ");
     }
 
     private static String firstNonEmpty(String... options) {
@@ -717,22 +713,12 @@ public class CrawlerAccessibilityService extends AccessibilityService {
     // ---- Capture ------------------------------------------------------------
 
     /**
-     * Every newly-seen screen (a layout the crawl hasn't recorded before) is captured, and
-     * every scroll that reveals enough new content. Returning to a known screen by Back, or a
-     * tap that changes nothing, is not. The perceptual image hash in {@link #capture} is the
-     * final guard that drops anything that still looks the same as a shot already saved, so
-     * this errs toward capturing — the goal is the most useful shots without duplicates.
+     * Captures the current screen whenever it differs at all from the last frame saved, so
+     * any state or UI change produces a screenshot. The only thing skipped is a frame that is
+     * effectively identical to the one just saved (nothing changed) or a blank/secure window.
+     * A text file with everything shown on the screen is written next to each screenshot.
      */
-    private void captureIfSignificant(Screen screen, ScreenAnalyzer.Result a, Screen from,
-                                      boolean scrolled, boolean isNew) {
-        if (scrolled) {
-            capture(screen, a, screen.lastImage);
-        } else if (isNew) {
-            capture(screen, a, null);
-        }
-    }
-
-    private void capture(Screen screen, ScreenAnalyzer.Result a, long[] mustDifferFrom) {
+    private void capture(Screen screen, ScreenAnalyzer.Result a) {
         ScreenCaptureService capture = ScreenCaptureService.instance;
         if (capture == null) {
             engine.removeCallbacks(stepRunnable);
@@ -747,28 +733,22 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         if (bitmap == null) return;
 
         long[] image = imageHash(bitmap);
-        if (image == null || isDuplicateImage(image)
-                || mustDifferFrom != null && differingBits(image, mustDifferFrom) < MIN_SCROLL_CHANGE_BITS) {
+        if (image == null
+                || (lastCapturedImage != null && differingBits(image, lastCapturedImage) <= SAME_IMAGE_BITS)) {
             if (image != null) Crawler.duplicatesSkipped++;
             bitmap.recycle();
             Crawler.notifyChanged();
             return;
         }
+        lastCapturedImage = image;
         screen.lastImage = image;
         // The store saves in the background and recycles the bitmap when it's done.
-        store.save(bitmap, screen.folder, firstNonEmpty(a.title, a.activity, FOLDER_DEFAULT));
-        savedImages.add(image);
+        store.save(bitmap, screen.folder, firstNonEmpty(a.title, a.activity, FOLDER_DEFAULT),
+                TextUtils.join("\n", a.text));
         fruitlessInteractions = 0;
         Crawler.shotCount++;
         Crawler.folderCount = store.folderCount();
         Crawler.status(getString(R.string.status_saved, screen.folder));
-    }
-
-    private boolean isDuplicateImage(long[] image) {
-        for (long[] other : savedImages) {
-            if (differingBits(image, other) <= SAME_IMAGE_BITS) return true;
-        }
-        return false;
     }
 
     private static int differingBits(long[] a, long[] b) {

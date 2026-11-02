@@ -27,6 +27,9 @@ final class ScreenAnalyzer {
     private static final int MAX_DEPTH = 40;
     private static final int MAX_NODES = 2500;
     private static final int MAX_TEXT_TOKEN = 30;
+    /** Full on-screen text dumped alongside each screenshot. */
+    private static final int MAX_SCREEN_TEXT_LINES = 600;
+    private static final int MAX_SCREEN_TEXT_LEN = 300;
     private static final int MAX_LIST_TEXT_TOKENS = 12;
     private static final int MAX_TAB_GROUP = 12;
     /** Tab bars in the lower part of the screen stay put across the app's sections. */
@@ -74,6 +77,8 @@ final class ScreenAnalyzer {
         final Set<String> structure = new TreeSet<>();
         final Set<String> labels = new TreeSet<>();
         final Set<String> selected = new TreeSet<>();
+        /** Every visible piece of text and content-description, in reading order. */
+        final List<String> text = new ArrayList<>();
         String title = "";
         final List<Candidate> candidates = new ArrayList<>();
         AccessibilityNodeInfo scrollable;
@@ -130,6 +135,9 @@ final class ScreenAnalyzer {
 
         String text = editable ? "" : trimmed(node.getText());
         String desc = trimmed(node.getContentDescription());
+        addScreenText(trimmed(node.getText()));
+        addScreenText(desc);
+        addScreenText(hint(node));
         addLabel(text, inList);
         checkAuth(node, id, text, desc, editable);
         if (inNav && (node.isSelected() || node.isChecked())) {
@@ -161,6 +169,16 @@ final class ScreenAnalyzer {
             if (child.isSelected() || child.isChecked()) anySelected = true;
         }
         return anySelected && tappable >= 2;
+    }
+
+    /** Keeps the real words shown on screen, not folded like the identity tokens. */
+    private void addScreenText(String s) {
+        if (s == null) return;
+        s = s.trim();
+        if (s.isEmpty() || s.length() > MAX_SCREEN_TEXT_LEN) return;
+        if (result.text.size() >= MAX_SCREEN_TEXT_LINES) return;
+        if (!result.text.isEmpty() && result.text.get(result.text.size() - 1).equals(s)) return;
+        result.text.add(s);
     }
 
     private void addLabel(String text, boolean inList) {

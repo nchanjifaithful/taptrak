@@ -3,6 +3,20 @@
 Each release's notes are built from the newest section below, followed by the
 commits in that build. Add a section here when a change is worth describing.
 
+## 2.7
+
+Capture everything, on every change.
+
+- **A screenshot is taken on any change at all** — every state or UI change, after
+  every interaction. The only frame skipped is one effectively identical to the one
+  just saved (nothing changed) or a blank/secure window.
+- **The screen's text is saved too.** Every screenshot gets a matching `.txt` of all
+  text on that screen, written to the app's own folder at
+  `Android/data/com.taptrak/files/TapTrak/<App>/<Folder>/` (same names as the images).
+- **No folder-depth limit** — folders mirror the full path taken into the app.
+- **It keeps going until the app is exhausted,** rather than stopping after a quiet
+  spell. Sign-in and permission screens still pause for you and resume afterwards.
+
 ## 2.6
 
 Explore the whole app, not just the first few screens.

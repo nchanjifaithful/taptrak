@@ -14,6 +14,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -59,11 +60,20 @@ final class ScreenshotStore {
 
     /** Queues the bitmap for writing, and recycles it afterwards. */
     void save(Bitmap bitmap, String folderPath, String screenTitle) {
+        save(bitmap, folderPath, screenTitle, null);
+    }
+
+    /**
+     * Queues the screenshot for writing and, when {@code textContent} is given, writes a
+     * matching {@code .txt} of everything on the screen next to it. The bitmap is recycled after.
+     */
+    void save(Bitmap bitmap, String folderPath, String screenTitle, String textContent) {
         String folder = safePath(folderPath);
         Integer last = perFolder.get(folder);
         int index = last == null ? 1 : last + 1;
         perFolder.put(folder, index);
-        String name = String.format(Locale.US, "%03d_%s.jpg", index, safeName(screenTitle, "Screen"));
+        String base = String.format(Locale.US, "%03d_%s", index, safeName(screenTitle, "Screen"));
+        String name = base + ".jpg";
 
         queueSlots.acquireUninterruptibly();
         writer.execute(() -> {
@@ -72,11 +82,30 @@ final class ScreenshotStore {
                         ? saveToMediaStore(bitmap, folder, name)
                         : saveToFile(bitmap, folder, name);
                 if (!ok) Crawler.status(context.getString(R.string.status_save_failed));
+                if (textContent != null && !textContent.isEmpty()) saveText(folder, base + ".txt", textContent);
             } finally {
                 bitmap.recycle();
                 queueSlots.release();
             }
         });
+    }
+
+    /**
+     * Writes the screen's text to the app's own folder
+     * ({@code Android/data/.../files/TapTrak/<App>/<Folder>/}), which needs no permission on
+     * any Android version. Named to match its screenshot.
+     */
+    private void saveText(String folder, String textName, String text) {
+        try {
+            File base = context.getExternalFilesDir(ROOT);
+            if (base == null) return;
+            File dir = new File(new File(base, appFolder), folder);
+            if (!dir.isDirectory() && !dir.mkdirs()) return;
+            try (FileOutputStream out = new FileOutputStream(new File(dir, textName))) {
+                out.write(text.getBytes(StandardCharsets.UTF_8));
+            }
+        } catch (IOException | RuntimeException ignored) {
+        }
     }
 
     /** Removes only what this run saved, so Restart starts clean without touching earlier runs. */
