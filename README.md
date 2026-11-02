@@ -19,15 +19,24 @@ Pictures/TapTrak/<App name>/<Feature>/01_<Screen title>.png
 The app's home screen goes in `Home`, and sign-in screens go in `Sign-in`. Other
 features are named after what opened them, such as the `Settings` tab.
 
-## How it decides what to capture
+## How it scans an app
+
+It's built for app inventories: every new screen in the app, without the small
+variations.
 
 | Behaviour | How it works |
 |---|---|
-| **Features** | A feature starts when the crawler taps something on the app's home screen, or a tab or navigation item anywhere. Screens reached from there belong to that feature. At most 15 screenshots are kept per feature. |
-| **No repeated screens** | A screen's identity is the set of view types and fixed labels it contains, ignoring positions, list contents and counts. Scrolling, new list rows and changing values don't make a screen look new, and a 85% match counts as the same screen. |
-| **No repeated images** | A 256-bit visual hash of each screenshot is compared with every other one in the run, and near-identical images are dropped. |
-| **Lists** | After two rows of a list lead nowhere new, the rest of that list is skipped. A news feed costs a few taps, while a settings list with different destinations is still walked. |
-| **Toggles and risky actions** | Switches and checkboxes aren't touched. Neither is anything labelled like log out, delete, buy, pay, subscribe, send, call, report, block or reset. |
+| **Tabs** | Each tab is a separate journey with its own folder. A tab's content is explored to the end, then the next tab is opened. |
+| **Whole app** | It remembers how screens connect. If Back leaves the app, it reopens the app and returns to what's unexplored. The run ends when nothing is left or the screenshot limit is reached. |
+| **What counts as new** | A different title, selected tab, activity or layout. |
+| **What's ignored** | Scrolling, new list rows and changing values, plus any image identical to one already saved. |
+| **Lists** | Rows are opened until they clearly lead to the same kind of page: three rows reaching a known screen, or five pages sharing one layout. A settings list is walked in full, while a news feed costs a few taps. |
+| **Toggles and risky actions** | Switches and checkboxes aren't touched. Neither is anything that logs out or deletes, or a button labelled exactly Pay, Buy, Send, Confirm, Place order, Subscribe, Checkout, Call, Block or Reset. Screens such as "Payments" are still opened. |
+
+## Release notes
+
+Every release lists what changed, from the newest section of
+[CHANGELOG.md](CHANGELOG.md) and the commits in that build.
 
 ## Sign-in and permission requests
 
@@ -92,7 +101,7 @@ variables in `build-standalone.sh` at them, and run it. Produces `TapTrak.apk`.
 
 1. Install the APK and open it.
 2. Accept the setup items.
-3. Choose an app and set the screenshot limit.
+3. Choose an app and type the maximum number of screenshots.
 4. Tap **Start capture**. TapTrak returns with a summary when the run ends.
 
 > Use this only on apps you own or have permission to test. Driving or capturing

@@ -1,8 +1,8 @@
 name: Build APK
 
 # Builds the APK on GitHub's servers (no local SDK needed) and publishes it
-# to this repo's Releases. Runs on every push to main, or on demand from the
-# Actions tab ("Run workflow").
+# to this repo's Releases, with a log of what changed. Runs on every push to
+# main, or on demand from the Actions tab ("Run workflow").
 
 on:
   push:
@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history and tags, to list changes since the last release
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -44,13 +46,32 @@ jobs:
           name: taptrak-debug
           path: TapTrak.apk
 
+      - name: Write release notes
+        run: |
+          previous=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          {
+            # The newest section of CHANGELOG.md.
+            awk '/^## /{ if (found) exit; found=1 } found' CHANGELOG.md
+            echo
+            if [ -n "$previous" ]; then
+              echo "### Commits since $previous"
+              echo
+              git log --no-merges --format='- %s (%h)' "$previous..HEAD"
+            else
+              echo "### Commits"
+              echo
+              git log --no-merges --format='- %s (%h)'
+            fi
+            echo
+            echo "---"
+            echo "Debug-signed APK, built automatically by GitHub Actions. Download **TapTrak.apk** below and install it on your device (you may need to allow installs from your file manager)."
+          } > release-notes.md
+          cat release-notes.md
+
       - name: Publish APK to Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.0.${{ github.run_number }}
-          name: TapTrak v2.0.${{ github.run_number }}
+          tag_name: v2.1.${{ github.run_number }}
+          name: TapTrak v2.1.${{ github.run_number }}
           files: TapTrak.apk
-          body: |
-            TapTrak debug-signed APK, built automatically by GitHub Actions.
-            Download **TapTrak.apk** below and install it on your device
-            (you may need to allow installs from your file manager).
+          body_path: release-notes.md

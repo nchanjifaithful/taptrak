@@ -18,26 +18,35 @@ import java.util.regex.Pattern;
  * engine needs: an identity for the screen, the elements worth tapping, and
  * whether the screen is asking the user to sign in.
  *
- * <p>The identity is a <em>set</em> of structural tokens with no bounds, counts or
- * list content, so scrolling, new list rows and changing values do not make a
- * screen look new.
+ * <p>A screen's identity has three parts: its structure (view types and ids), its
+ * labels (fixed text such as the title) and which tabs are selected. Positions and
+ * counts are left out, so scrolling and new list rows don't make a screen look new,
+ * while a different title or tab does.
  */
 final class ScreenAnalyzer {
 
     private static final int MAX_DEPTH = 40;
-    private static final int MAX_NODES = 1500;
+    private static final int MAX_NODES = 2500;
     private static final int MAX_TEXT_TOKEN = 30;
     private static final int MAX_LIST_TEXT_TOKENS = 12;
+    /** Below this many fixed labels, a screen is told apart by its first list entries. */
+    private static final int MIN_FIXED_LABELS = 2;
+    private static final int MAX_TAB_GROUP = 12;
+    /** Tab bars in the lower part of the screen stay put across the app's sections. */
+    private static final float BOTTOM_BAR_FROM = 0.6f;
 
     private static final Pattern DIGITS = Pattern.compile("\\d+");
     private static final Pattern NAV_CONTAINER = Pattern.compile(
-            "bottomnav|navigationbar|navigationrail|tablayout|tabrow|tabbar|navigationview"
-                    + "|drawer|nav_|_nav|bottom_bar");
-    /** Actions the crawler must never trigger by itself. */
-    private static final Pattern DANGEROUS = Pattern.compile(
-            "\\b(log ?out|sign ?out|delete|remove|uninstall|deactivate|close account|purchase|buy"
-                    + "|subscribe|upgrade|pay|checkout|check out|place order|send|call|report"
-                    + "|block|reset)\\b");
+            "bottomnav|bottom_nav|bottombar|bottom_bar|navigationbar|navigationrail|tablayout"
+                    + "|tab_layout|tabrow|tabbar|tab_bar|navigationview|nav_view|navview");
+    private static final Pattern TOGGLE = Pattern.compile("Switch|CheckBox|RadioButton|ToggleButton");
+    /** Never tapped, because they end the session or destroy data. */
+    private static final Pattern DESTRUCTIVE = Pattern.compile(
+            "\\b(log ?out|sign ?out|delete|uninstall|deactivate|close account|remove account)\\b");
+    /** Only exact labels: "Pay" commits an action, while "Payments" just opens a screen. */
+    private static final Pattern COMMITS = Pattern.compile(
+            "^(pay( now)?|buy( now)?|send|confirm( payment)?|place order|complete purchase"
+                    + "|subscribe( now)?|checkout|check out|call|call now|block|reset)$");
     /** Pressing Back does the same job, without spending a tap. */
     private static final Pattern RETREAT = Pattern.compile("^(back|navigate up|close|cancel|dismiss)$");
     private static final Pattern CREDENTIAL_FIELD = Pattern.compile(
@@ -52,18 +61,24 @@ final class ScreenAnalyzer {
     static final class Candidate {
         AccessibilityNodeInfo node;
         String signature;
-        /** Rows of one list share a kind; the engine gives up on kinds that lead nowhere new. */
+        /** Rows of one list share a kind, so the engine can give up on rows that lead nowhere new. */
         String kind;
         String label;
         int priority;
         int top;
         boolean editable;
         boolean nav;
+        boolean bottomBar;
+        boolean selected;
+        boolean row;
     }
 
     static final class Result {
         String hash;
-        final Set<String> tokens = new TreeSet<>();
+        String activity;
+        final Set<String> structure = new TreeSet<>();
+        final Set<String> labels = new TreeSet<>();
+        final Set<String> selected = new TreeSet<>();
         String title = "";
         final List<Candidate> candidates = new ArrayList<>();
         AccessibilityNodeInfo scrollable;
@@ -75,27 +90,28 @@ final class ScreenAnalyzer {
     private final List<String> listTexts = new ArrayList<>();
     private final int screenHeight;
     private int visited;
-    private int idTokens;
     private int titleTop = Integer.MAX_VALUE;
     private boolean hasPassword, hasCredentialField, hasCodeField, hasAuthAction, hasProvider;
     private boolean hasProgress;
 
     private ScreenAnalyzer(int screenHeight) { this.screenHeight = screenHeight; }
 
-    static Result analyze(AccessibilityNodeInfo root, int screenHeight) {
+    static Result analyze(AccessibilityNodeInfo root, int screenHeight, String activity) {
         ScreenAnalyzer a = new ScreenAnalyzer(screenHeight);
+        a.result.activity = activity;
         a.walk(root, 0, false, false);
         return a.finish();
     }
 
     private Result finish() {
-        // Compose and web screens expose few ids, so structure alone can't tell them apart.
-        if (idTokens < 3) result.tokens.addAll(listTexts);
-        result.hash = Integer.toHexString(TextUtils.join("|", result.tokens).hashCode())
-                + "_" + result.tokens.size();
+        if (result.labels.size() < MIN_FIXED_LABELS) result.labels.addAll(listTexts);
+        result.hash = Integer.toHexString((result.activity + "|"
+                + TextUtils.join("|", result.structure) + "|"
+                + TextUtils.join("|", result.labels) + "|"
+                + TextUtils.join("|", result.selected)).hashCode());
         result.auth = hasPassword || hasCodeField || hasProvider
                 || (hasCredentialField && hasAuthAction);
-        result.loading = hasProgress && result.tokens.size() < 8;
+        result.loading = hasProgress && result.structure.size() < 8;
         Collections.sort(result.candidates, (a, b) -> a.priority != b.priority
                 ? b.priority - a.priority
                 : a.top - b.top);
@@ -110,38 +126,56 @@ final class ScreenAnalyzer {
         String cls = simpleClass(node);
         String id = viewId(node);
         boolean editable = node.isEditable();
-        boolean nav = inNav || NAV_CONTAINER.matcher((cls + " " + id).toLowerCase(Locale.US)).find();
         boolean scrollable = node.isScrollable();
+        boolean navContainer = NAV_CONTAINER.matcher((cls + " " + id).toLowerCase(Locale.US)).find();
 
-        if (id.isEmpty()) {
-            result.tokens.add(cls);
-        } else if (result.tokens.add(cls + "#" + id)) {
-            idTokens++;
-        }
+        result.structure.add(id.isEmpty() ? cls : cls + "#" + id);
         if (cls.contains("ProgressBar")) hasProgress = true;
         if (scrollable && result.scrollable == null) result.scrollable = node;
 
         String text = editable ? "" : trimmed(node.getText());
         String desc = trimmed(node.getContentDescription());
-        addTextTokens(node, text, inList, nav);
+        addLabel(text, inList);
         checkAuth(node, id, text, desc, editable);
-        if (node.isClickable() || editable) addCandidate(node, cls, id, text, desc, editable, inList, nav);
+        if (inNav && (node.isSelected() || node.isChecked())) {
+            String label = !text.isEmpty() ? text : !desc.isEmpty() ? desc : firstText(node, 3);
+            if (!label.isEmpty()) result.selected.add(DIGITS.matcher(label).replaceAll("#"));
+        }
+        if (node.isClickable() || editable) addCandidate(node, cls, id, text, desc, editable, inList, inNav);
         considerTitle(node, text, inList);
 
+        // Scrollable tab strips shouldn't count as list content.
+        boolean childNav = inNav || navContainer || isTabGroup(node);
+        boolean childList = (inList || scrollable) && !childNav;
         for (int i = 0, n = node.getChildCount(); i < n; i++) {
-            walk(node.getChild(i), depth + 1, inList || scrollable, nav);
+            walk(node.getChild(i), depth + 1, childList, childNav);
         }
     }
 
-    private void addTextTokens(AccessibilityNodeInfo node, String text, boolean inList, boolean nav) {
+    /** Tappable siblings with one selected: tabs, whatever the app built them from. */
+    private static boolean isTabGroup(AccessibilityNodeInfo parent) {
+        int n = parent.getChildCount();
+        if (n < 2 || n > MAX_TAB_GROUP) return false;
+        int tappable = 0;
+        boolean anySelected = false;
+        for (int i = 0; i < n; i++) {
+            AccessibilityNodeInfo child = parent.getChild(i);
+            if (child == null || !child.isClickable()) continue;
+            if (TOGGLE.matcher(simpleClass(child)).find()) return false;
+            tappable++;
+            if (child.isSelected() || child.isChecked()) anySelected = true;
+        }
+        return anySelected && tappable >= 2;
+    }
+
+    private void addLabel(String text, boolean inList) {
         if (text.isEmpty() || text.length() > MAX_TEXT_TOKEN) return;
         String normal = DIGITS.matcher(text).replaceAll("#");
         if (!inList) {
-            result.tokens.add("T:" + normal);
+            result.labels.add(normal);
         } else if (listTexts.size() < MAX_LIST_TEXT_TOKENS) {
-            listTexts.add("T:" + normal);
+            listTexts.add(normal);
         }
-        if (nav && node.isSelected()) result.tokens.add("S:" + normal);
     }
 
     private void checkAuth(AccessibilityNodeInfo node, String id, String text, String desc, boolean editable) {
@@ -161,9 +195,10 @@ final class ScreenAnalyzer {
     }
 
     private void addCandidate(AccessibilityNodeInfo node, String cls, String id, String text,
-                              String desc, boolean editable, boolean inList, boolean inNav) {
-        // Toggles only change state on the screen, which is the same kind of change every time.
-        if (node.isCheckable() || node.isPassword()) return;
+                              String desc, boolean editable, boolean inList, boolean nav) {
+        if (node.isPassword() || TOGGLE.matcher(cls).find()) return;
+        // Bottom-bar items report as checkable too, so only non-tabs count as toggles here.
+        if (node.isCheckable() && !nav) return;
 
         Rect r = new Rect();
         node.getBoundsInScreen(r);
@@ -171,21 +206,23 @@ final class ScreenAnalyzer {
 
         String label = !text.isEmpty() ? text : !desc.isEmpty() ? desc : firstText(node, 3);
         String lower = label.toLowerCase(Locale.US);
-        if (DANGEROUS.matcher(lower).find() || DANGEROUS.matcher(id.replace('_', ' ')).find()) return;
-        if (RETREAT.matcher(lower).matches()) return;
-
-        boolean nav = inNav || (!inList && r.top > screenHeight * 0.86f && r.height() < screenHeight * 0.16f);
+        if (DESTRUCTIVE.matcher(lower).find() || DESTRUCTIVE.matcher(id.replace('_', ' ')).find()) return;
+        if (COMMITS.matcher(lower).matches() || RETREAT.matcher(lower).matches()) return;
 
         Candidate c = new Candidate();
         c.node = node;
         c.label = label;
         c.editable = editable;
         c.nav = nav;
+        c.bottomBar = nav && r.top > screenHeight * BOTTOM_BAR_FROM;
+        c.selected = nav && (node.isSelected() || node.isChecked());
+        c.row = inList && !editable && !nav;
         c.top = r.top;
         c.signature = cls + "|" + id + "|" + DIGITS.matcher(label).replaceAll("#")
                 + (label.isEmpty() ? "|" + r.left + "," + r.top : "");
-        c.kind = inList && !editable && !nav ? "row|" + cls + "|" + id : c.signature;
-        c.priority = nav ? 5 : editable ? 4 : inList ? 2 : label.isEmpty() ? 1 : 3;
+        c.kind = c.row ? "row|" + cls + "|" + id : c.signature;
+        // Tabs come last: a tab's content is walked to the end before moving to the next tab.
+        c.priority = nav ? 0 : editable ? 4 : inList ? 2 : label.isEmpty() ? 1 : 3;
         result.candidates.add(c);
     }
 

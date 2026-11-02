@@ -7,7 +7,7 @@
 
     <string name="section_setup">Setup</string>
     <string name="section_target">App to capture</string>
-    <string name="section_limit">Screenshot limit</string>
+    <string name="section_limit">Maximum screenshots</string>
     <string name="section_result">Last run</string>
 
     <string name="setup_done">Accepted</string>

@@ -153,32 +153,21 @@
                 style="@style/SectionLabel"
                 android:text="@string/section_limit" />
 
-            <LinearLayout
+            <EditText
+                android:id="@+id/limitInput"
                 style="@style/Card"
-                android:gravity="center_vertical"
-                android:orientation="horizontal"
-                android:paddingStart="8dp"
+                android:layout_height="52dp"
+                android:hint="@string/section_limit"
+                android:importantForAutofill="no"
+                android:inputType="number"
+                android:maxLength="7"
+                android:maxLines="1"
+                android:paddingStart="16dp"
                 android:paddingEnd="16dp"
-                android:paddingTop="14dp"
-                android:paddingBottom="14dp">
-
-                <SeekBar
-                    android:id="@+id/limitBar"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:contentDescription="@string/section_limit"
-                    android:max="49" />
-
-                <TextView
-                    android:id="@+id/limitValue"
-                    android:layout_width="44dp"
-                    android:layout_height="wrap_content"
-                    android:gravity="end"
-                    android:textColor="@color/text_primary"
-                    android:textSize="16sp"
-                    android:fontFamily="sans-serif-medium" />
-            </LinearLayout>
+                android:textColor="@color/text_primary"
+                android:textColorHint="@color/text_secondary"
+                android:textSize="16sp"
+                android:fontFamily="sans-serif-medium" />
         </LinearLayout>
     </ScrollView>
 

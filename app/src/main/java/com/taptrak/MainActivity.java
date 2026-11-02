@@ -15,8 +15,8 @@ import android.os.Bundle;
 import android.provider.Settings;
 import android.view.View;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.ImageView;
-import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -33,21 +33,19 @@ public class MainActivity extends Activity implements Crawler.Listener {
     private static final String PREFS = "taptrak";
     private static final String KEY_PACKAGE = "package";
     private static final String KEY_LABEL = "label";
-    private static final String KEY_LIMIT = "limit";
+    private static final String KEY_LIMIT = "shot_limit";
     private static final String KEY_ASKED_NOTIFICATIONS = "asked_notifications";
 
-    private static final int LIMIT_MIN = 10;
-    private static final int LIMIT_STEP = 10;
-    private static final int LIMIT_DEFAULT = 100;
+    private static final int LIMIT_DEFAULT = 1000;
 
     private SharedPreferences prefs;
     private View rowAccessibility, rowCapture, rowNotifications, rowStorage;
     private ImageView targetIcon;
-    private TextView targetName, targetPackage, limitValue, setupHint;
+    private TextView targetName, targetPackage, setupHint;
     private View resultCard;
     private TextView resultSummary, resultPath;
     private Button startButton;
-    private SeekBar limitBar;
+    private EditText limitInput;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -62,8 +60,7 @@ public class MainActivity extends Activity implements Crawler.Listener {
         targetIcon = findViewById(R.id.targetIcon);
         targetName = findViewById(R.id.targetName);
         targetPackage = findViewById(R.id.targetPackage);
-        limitValue = findViewById(R.id.limitValue);
-        limitBar = findViewById(R.id.limitBar);
+        limitInput = findViewById(R.id.limitInput);
         setupHint = findViewById(R.id.setupHint);
         resultCard = findViewById(R.id.resultCard);
         resultSummary = findViewById(R.id.resultSummary);
@@ -89,17 +86,7 @@ public class MainActivity extends Activity implements Crawler.Listener {
         findViewById(R.id.resultOpen).setOnClickListener(v -> openLastShot());
         startButton.setOnClickListener(v -> onPrimaryAction());
 
-        limitBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
-                limitValue.setText(String.valueOf(limitFrom(progress)));
-            }
-            @Override public void onStartTrackingTouch(SeekBar bar) {}
-            @Override public void onStopTrackingTouch(SeekBar bar) {
-                prefs.edit().putInt(KEY_LIMIT, limitFrom(bar.getProgress())).apply();
-            }
-        });
-        limitBar.setProgress((prefs.getInt(KEY_LIMIT, LIMIT_DEFAULT) - LIMIT_MIN) / LIMIT_STEP);
-        limitValue.setText(String.valueOf(limitFrom(limitBar.getProgress())));
+        limitInput.setText(String.valueOf(prefs.getInt(KEY_LIMIT, LIMIT_DEFAULT)));
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) rowNotifications.setVisibility(View.GONE);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) rowStorage.setVisibility(View.GONE);
@@ -145,7 +132,7 @@ public class MainActivity extends Activity implements Crawler.Listener {
         startButton.setText(active ? R.string.action_stop : R.string.action_start);
         startButton.setBackgroundResource(active ? R.drawable.bg_button_danger : R.drawable.bg_button_primary);
         startButton.setEnabled(active || ready);
-        limitBar.setEnabled(!active);
+        limitInput.setEnabled(!active);
 
         if (active) {
             setupHint.setText(Crawler.statusText);
@@ -176,7 +163,9 @@ public class MainActivity extends Activity implements Crawler.Listener {
         }
         Crawler.targetPackage = prefs.getString(KEY_PACKAGE, "");
         Crawler.targetLabel = prefs.getString(KEY_LABEL, Crawler.targetPackage);
-        Crawler.maxShots = limitFrom(limitBar.getProgress());
+        Crawler.maxShots = readLimit();
+        prefs.edit().putInt(KEY_LIMIT, Crawler.maxShots).apply();
+        limitInput.setText(String.valueOf(Crawler.maxShots));
         service.startCrawl();
         moveTaskToBack(true);
     }
@@ -211,7 +200,13 @@ public class MainActivity extends Activity implements Crawler.Listener {
         row.findViewById(R.id.rowChevron).setVisibility(done ? View.GONE : View.VISIBLE);
     }
 
-    private static int limitFrom(int progress) { return LIMIT_MIN + progress * LIMIT_STEP; }
+    private int readLimit() {
+        try {
+            return Math.max(1, Integer.parseInt(limitInput.getText().toString().trim()));
+        } catch (NumberFormatException e) {
+            return prefs.getInt(KEY_LIMIT, LIMIT_DEFAULT); // Empty or too long to be a real limit.
+        }
+    }
 
     private boolean hasPermission(String permission) {
         return checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED;

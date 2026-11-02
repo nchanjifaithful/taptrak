@@ -24,7 +24,7 @@ public final class Crawler {
 
     public static volatile String targetPackage = "";
     public static volatile String targetLabel = "";
-    public static volatile int maxShots = 100;
+    public static volatile int maxShots = 1000;
 
     public static volatile State state = State.IDLE;
     public static volatile String statusText = "";
