@@ -73,8 +73,10 @@ final class ScreenAnalyzer {
 
     static final class Result {
         String hash;
-        /** Screen identity for the graph: structure and tabs only, no text or values. */
+        /** Layout identity: structure and tabs only, no text or values. */
         String structuralKey;
+        /** Screen identity for the graph: the layout plus the page's title. */
+        String pageKey;
         String activity;
         final Set<String> structure = new TreeSet<>();
         final Set<String> labels = new TreeSet<>();
@@ -115,6 +117,9 @@ final class ScreenAnalyzer {
         result.structuralKey = Integer.toHexString((result.activity + "|S|"
                 + TextUtils.join("|", result.structure) + "|T|"
                 + TextUtils.join("|", result.selected)).hashCode());
+        // Pages that share a template but have different titles, like two settings pages, differ.
+        result.pageKey = result.structuralKey + "_"
+                + Integer.toHexString(DIGITS.matcher(result.title).replaceAll("#").hashCode());
         result.auth = hasPassword || hasCodeField || hasProvider
                 || (hasCredentialField && hasAuthAction);
         result.loading = hasProgress && result.structure.size() < 8;

@@ -3,6 +3,16 @@
 Each release's notes are built from the newest section below, followed by the
 commits in that build. Add a section here when a change is worth describing.
 
+## 3.1
+
+- **Pages that share a layout are no longer merged.** A page's title is part of its
+  identity again, so pages like "Notifications" and "Privacy" built from one template
+  each get a screenshot.
+- **Long lists still stay short.** Once a list's rows have opened five pages sharing
+  one layout, the remaining rows count as that same page.
+- **The settle check now hears content changes.** The service receives content-change
+  events, so it can tell when an app has stopped updating before capturing.
+
 ## 3.0
 
 Rebuilt as a navigation-graph crawler. No more transition-UI screenshots.

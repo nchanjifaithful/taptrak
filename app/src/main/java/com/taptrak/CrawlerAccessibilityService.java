@@ -29,9 +29,10 @@ import java.util.Set;
  * Navigation-graph capture engine.
  *
  * <p>Each distinct screen is a node, keyed by its <em>structure</em> (activity, view ids and
- * role skeleton, and which tabs are selected) rather than its text — so the same layout showing
- * different data is one node, and every row of a list leads back to the same detail node instead
- * of a hundred near-identical screens. Each tappable element is an edge. The engine grows a
+ * role skeleton, and which tabs are selected) plus its title, so two settings pages built from
+ * one template are still two nodes. Once a list's rows have opened a few pages sharing a layout,
+ * the rest of that list leads back to the same detail node instead of a hundred near-identical
+ * screens. Each tappable element is an edge. The engine grows a
  * transition graph, always choosing the untried action most likely to reveal a node it hasn't
  * seen, and screenshots a node exactly once.
  *
@@ -79,6 +80,8 @@ public class CrawlerAccessibilityService extends AccessibilityService {
     private static final int MAX_STEPS = 1000000;
     private static final int MAX_SCROLLS_PER_NODE = 2;
     private static final int MAX_TAPS_PER_NODE = 400;
+    /** Distinct same-layout pages a list's rows may open before the rest count as the same page. */
+    private static final int MAX_SAME_TEMPLATE_PAGES = 5;
     private static final int MAX_BACKS_SEARCH = 4;    // Back tries before falling back to replay
     private static final int MAX_FOREIGN_BACKS = 4;
     private static final int MAX_REPLAY_FAILS = 3;
@@ -114,6 +117,8 @@ public class CrawlerAccessibilityService extends AccessibilityService {
         boolean captured;
         boolean exhausted;
         boolean listDone;                     // a list row here already led to a known screen
+        final Map<String, Integer> listTemplateCounts = new HashMap<>(); // layout -> pages opened from rows
+        final Map<String, String> listTemplateNodes = new HashMap<>();   // layout -> first such page
         int taps;
         int scrolls;
         int gridTaps;
@@ -388,12 +393,13 @@ public class CrawlerAccessibilityService extends AccessibilityService {
 
     /** Find or create the node for this screen, and record the edge that reached it. */
     private Node resolveNode(ScreenAnalyzer.Result a) {
-        Node node = nodes.get(a.structuralKey);
-        boolean isNew = node == null;
         Node source = lastAction != null ? nodes.get(lastAction.sourceKey) : null;
+        Node node = nodes.get(a.pageKey);
+        if (node == null && source != null && lastAction.listItem) node = sameTemplateFromList(source, a);
+        boolean isNew = node == null;
         if (isNew) {
             node = new Node();
-            node.key = a.structuralKey;
+            node.key = a.pageKey;
             node.title = firstNonEmpty(a.title, a.activity, FOLDER_DEFAULT);
             if (root == null && !a.auth) { root = node; node.pathFromRoot = new ArrayList<>(); }
             node.folder = folderFor(a, source);
@@ -401,6 +407,10 @@ public class CrawlerAccessibilityService extends AccessibilityService {
                 node.pathFromRoot = append(source.pathFromRoot, lastAction.signature);
             }
             nodes.put(node.key, node);
+            if (source != null && lastAction.listItem) {
+                source.listTemplateCounts.merge(a.structuralKey, 1, Integer::sum);
+                source.listTemplateNodes.putIfAbsent(a.structuralKey, node.key);
+            }
         }
         if (source != null && lastAction != null) {
             source.edges.put(lastAction.signature, node.key);
@@ -412,6 +422,17 @@ public class CrawlerAccessibilityService extends AccessibilityService {
             if (c.selected) node.tried.add(c.signature);
         }
         return node;
+    }
+
+    /**
+     * Once a list's rows have opened {@link #MAX_SAME_TEMPLATE_PAGES} pages sharing one layout,
+     * it's a feed of items: further rows map to the first of those pages instead of new ones.
+     */
+    private Node sameTemplateFromList(Node source, ScreenAnalyzer.Result a) {
+        Integer count = source.listTemplateCounts.get(a.structuralKey);
+        if (count == null || count < MAX_SAME_TEMPLATE_PAGES) return null;
+        String first = source.listTemplateNodes.get(a.structuralKey);
+        return first == null ? null : nodes.get(first);
     }
 
     private String folderFor(ScreenAnalyzer.Result a, Node source) {
