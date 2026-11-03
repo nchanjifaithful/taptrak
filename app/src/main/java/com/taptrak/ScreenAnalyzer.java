@@ -73,6 +73,8 @@ final class ScreenAnalyzer {
 
     static final class Result {
         String hash;
+        /** Screen identity for the graph: structure and tabs only, no text or values. */
+        String structuralKey;
         String activity;
         final Set<String> structure = new TreeSet<>();
         final Set<String> labels = new TreeSet<>();
@@ -108,6 +110,10 @@ final class ScreenAnalyzer {
         result.hash = Integer.toHexString((result.activity + "|"
                 + TextUtils.join("|", result.structure) + "|"
                 + TextUtils.join("|", result.labels) + "|"
+                + TextUtils.join("|", result.selected)).hashCode());
+        // Identity without labels: same layout with different data stays one node.
+        result.structuralKey = Integer.toHexString((result.activity + "|S|"
+                + TextUtils.join("|", result.structure) + "|T|"
                 + TextUtils.join("|", result.selected)).hashCode());
         result.auth = hasPassword || hasCodeField || hasProvider
                 || (hasCredentialField && hasAuthAction);

@@ -12,7 +12,7 @@ android {
         targetSdk = 34
         // Android needs this to rise with each update. Cloud builds number themselves.
         versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toInt() ?: 1
-        versionName = "2.7"
+        versionName = "3.0"
     }
 
     // Cloud builds sign with one permanent key, because Android only installs an

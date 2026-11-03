@@ -26,13 +26,13 @@ Text files use the same folder names and go in the app's own storage, at
 
 | Behaviour | How it works |
 |---|---|
-| **Order** | Depth-first. On each screen it tries every element, scrolls up to twice for more, moves to the next tab, then presses Back. |
-| **Screenshots** | Any step where the screen differs from the last screenshot saved, including returning to a screen already captured. |
-| **Skipped** | A frame effectively identical to the last one saved, and blank or protected windows. |
+| **Order** | It builds a map of screens. On each screen it tries untried elements in priority order and scrolls up to twice. Then it heads for the nearest unfinished screen, first by pressing Back, then by reopening the app and replaying the taps that reached it. |
+| **Screenshots** | One per distinct screen layout, taken once the screen has stopped moving and confirmed by two still frames. |
+| **Skipped** | The same layout showing different data, such as other items in a list. Also skipped: further list rows once one leads to a known screen, elements that lead to fully explored screens, and blank or protected windows. |
 | **Screen text** | Each screenshot gets a matching `.txt` of the text on that screen. |
-| **Speed** | It moves on as soon as the screen stops changing, and saves in the background. |
+| **Speed** | It waits for each screen to settle before capturing or tapping, and saves in the background. |
 | **Screens with little to tap** | Games and web content are also tapped on a grid of points. |
-| **Whole app** | If Back leaves the app, it reopens the app and returns to what's unfinished. The run ends when nothing is left, the limit is reached, or 8000 interactions in a row produce no new image. |
+| **Whole app** | The run ends when no reachable screen is unfinished, the screenshot limit is reached, or the app has been reopened 80 times. |
 | **Never tapped** | Anything that logs out or deletes, or a button labelled exactly Pay, Buy, Send, Confirm, Place order, Subscribe, Checkout, Call, Block or Reset. |
 
 Because it presses switches and tries every element, run it on a test account: it can

@@ -3,6 +3,26 @@
 Each release's notes are built from the newest section below, followed by the
 commits in that build. Add a section here when a change is worth describing.
 
+## 3.0
+
+Rebuilt as a navigation-graph crawler. No more transition-UI screenshots.
+
+- **Screens are a graph of nodes.** A node is identified by its structure — activity,
+  view ids, role skeleton and selected tabs — not its text, so the same layout with
+  different data is one node and every list row leads back to a single detail node.
+- **Actions are edges.** The engine always picks the untried element most likely to
+  reach a node it hasn't seen, and skips any element whose edge already leads to a
+  fully-explored screen, so it stops grinding on lists and dead ends.
+- **Settle gate kills transition frames.** After each action it waits for accessibility
+  events to fall silent, the view tree to be stable across polls, and no spinner to be
+  present, then confirms with two still frames before saving. Mid-animation and
+  half-loaded frames are rejected and retried.
+- **Hybrid navigation.** To reach the next unexplored screen it tries Back first, and
+  when Back fails or it ends up somewhere unexpected it relaunches and replays the
+  recorded tap-path to the target.
+- One clean screenshot per screen, each with its matching on-screen-text `.txt`.
+  Sign-in and permission screens still pause for you and resume afterwards.
+
 ## 2.7
 
 Capture everything, on every change.
