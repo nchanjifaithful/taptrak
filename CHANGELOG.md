@@ -3,6 +3,11 @@
 Each release's notes are built from the newest section below, followed by the
 commits in that build. Add a section here when a change is worth describing.
 
+## 3.2
+
+- **Lists are followed further.** A list's rows now open up to ten pages sharing one
+  layout, up from five, before the remaining rows count as the same page.
+
 ## 3.1
 
 - **Pages that share a layout are no longer merged.** A page's title is part of its

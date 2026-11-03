@@ -28,7 +28,7 @@ Text files use the same folder names and go in the app's own storage, at
 |---|---|
 | **Order** | It builds a map of screens. On each screen it tries untried elements in priority order and scrolls up to twice. Then it heads for the nearest unfinished screen, first by pressing Back, then by reopening the app and replaying the taps that reached it. |
 | **Screenshots** | One per distinct screen: its layout and title. Each is taken once the screen has stopped moving, confirmed by two still frames. |
-| **Skipped** | Further list rows once five pages from that list share a layout, or once a row leads to a known screen. Also skipped: elements that lead to fully explored screens, and blank or protected windows. |
+| **Skipped** | Further list rows once ten pages from that list share a layout, or once a row leads to a known screen. Also skipped: elements that lead to fully explored screens, and blank or protected windows. |
 | **Screen text** | Each screenshot gets a matching `.txt` of the text on that screen. |
 | **Speed** | It waits for each screen to settle before capturing or tapping, and saves in the background. |
 | **Screens with little to tap** | Games and web content are also tapped on a grid of points. |

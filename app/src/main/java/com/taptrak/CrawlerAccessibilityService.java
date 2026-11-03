@@ -81,7 +81,7 @@ public class CrawlerAccessibilityService extends AccessibilityService {
     private static final int MAX_SCROLLS_PER_NODE = 2;
     private static final int MAX_TAPS_PER_NODE = 400;
     /** Distinct same-layout pages a list's rows may open before the rest count as the same page. */
-    private static final int MAX_SAME_TEMPLATE_PAGES = 5;
+    private static final int MAX_SAME_TEMPLATE_PAGES = 10;
     private static final int MAX_BACKS_SEARCH = 4;    // Back tries before falling back to replay
     private static final int MAX_FOREIGN_BACKS = 4;
     private static final int MAX_REPLAY_FAILS = 3;
